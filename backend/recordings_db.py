@@ -1,12 +1,20 @@
+import json
 import sqlite3
+import time
 from pathlib import Path
 from typing import Optional
 
 DB_PATH = Path(__file__).parent / "recordings.db"
 
 
+def _connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 def init_db() -> None:
-    with sqlite3.connect(str(DB_PATH)) as conn:
+    with _connect() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS recordings (
                 id TEXT PRIMARY KEY,
@@ -19,8 +27,43 @@ def init_db() -> None:
                 filesize_bytes INTEGER NOT NULL DEFAULT 0
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS activities (
+                id TEXT PRIMARY KEY,
+                started_at REAL NOT NULL,
+                closed_at REAL,
+                status TEXT NOT NULL DEFAULT 'closed',
+                summary_json TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS detection_events (
+                id TEXT PRIMARY KEY,
+                activity_id TEXT NOT NULL,
+                timestamp REAL NOT NULL,
+                source TEXT NOT NULL,
+                type TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}'
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS explanations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                activity_id TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                explanation_json TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_events_activity ON detection_events(activity_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_explanations_activity ON explanations(activity_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_activities_time ON activities(started_at, closed_at)")
         conn.commit()
 
+
+# ---------------------------------------------------------------------------
+# Recordings
+# ---------------------------------------------------------------------------
 
 def save_recording(
     id: str,
@@ -32,7 +75,7 @@ def save_recording(
     frame_count: int,
     filesize_bytes: int,
 ) -> None:
-    with sqlite3.connect(str(DB_PATH)) as conn:
+    with _connect() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO recordings
                (id, started_at, ended_at, filename, filepath,
@@ -45,8 +88,7 @@ def save_recording(
 
 
 def list_recordings() -> list[dict]:
-    with sqlite3.connect(str(DB_PATH)) as conn:
-        conn.row_factory = sqlite3.Row
+    with _connect() as conn:
         rows = conn.execute(
             "SELECT * FROM recordings ORDER BY started_at DESC"
         ).fetchall()
@@ -54,8 +96,7 @@ def list_recordings() -> list[dict]:
 
 
 def get_recording(id: str) -> Optional[dict]:
-    with sqlite3.connect(str(DB_PATH)) as conn:
-        conn.row_factory = sqlite3.Row
+    with _connect() as conn:
         row = conn.execute(
             "SELECT * FROM recordings WHERE id = ?", (id,)
         ).fetchone()
@@ -64,8 +105,7 @@ def get_recording(id: str) -> Optional[dict]:
 
 def delete_recording_row(id: str) -> Optional[str]:
     """Remove from DB and return the filepath, or None if not found."""
-    with sqlite3.connect(str(DB_PATH)) as conn:
-        conn.row_factory = sqlite3.Row
+    with _connect() as conn:
         row = conn.execute(
             "SELECT filepath FROM recordings WHERE id = ?", (id,)
         ).fetchone()
@@ -75,3 +115,96 @@ def delete_recording_row(id: str) -> Optional[str]:
         conn.execute("DELETE FROM recordings WHERE id = ?", (id,))
         conn.commit()
         return filepath
+
+
+# ---------------------------------------------------------------------------
+# Activities
+# ---------------------------------------------------------------------------
+
+def save_activity(activity) -> None:
+    """Persist a closed activity with all its events. Called when activity closes."""
+    with _connect() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO activities (id, started_at, closed_at, status, summary_json)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                activity.id,
+                activity.started_at,
+                activity.closed_at,
+                activity.status,
+                json.dumps(activity.summary.model_dump()) if activity.summary else None,
+            ),
+        )
+        for event in activity.events:
+            conn.execute(
+                """INSERT OR REPLACE INTO detection_events
+                   (id, activity_id, timestamp, source, type, confidence, metadata_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    event.id,
+                    activity.id,
+                    event.timestamp,
+                    event.source,
+                    event.type,
+                    event.confidence,
+                    json.dumps(event.metadata),
+                ),
+            )
+        conn.commit()
+
+
+def save_explanation(activity_id: str, explanation) -> None:
+    """Persist a live reasoning update for an activity."""
+    with _connect() as conn:
+        conn.execute(
+            """INSERT INTO explanations (activity_id, created_at, explanation_json)
+               VALUES (?, ?, ?)""",
+            (activity_id, time.time(), json.dumps(explanation.model_dump())),
+        )
+        conn.commit()
+
+
+def get_activities_for_recording(recording_id: str) -> list[dict]:
+    """Return all activities (with events + explanations) that fall within a recording's time window."""
+    rec = get_recording(recording_id)
+    if rec is None:
+        return []
+
+    window_start = rec["started_at"] - 5
+    window_end = rec["ended_at"] + 5
+
+    with _connect() as conn:
+        act_rows = conn.execute(
+            """SELECT * FROM activities
+               WHERE started_at <= ? AND (closed_at IS NULL OR closed_at >= ?)
+               ORDER BY started_at ASC""",
+            (window_end, window_start),
+        ).fetchall()
+
+        result = []
+        for act_row in act_rows:
+            act = dict(act_row)
+            act["summary"] = json.loads(act.pop("summary_json")) if act.get("summary_json") else None
+
+            event_rows = conn.execute(
+                "SELECT * FROM detection_events WHERE activity_id = ? ORDER BY timestamp ASC",
+                (act["id"],),
+            ).fetchall()
+            act["events"] = []
+            for e in event_rows:
+                ed = dict(e)
+                ed["metadata"] = json.loads(ed.pop("metadata_json"))
+                act["events"].append(ed)
+
+            expl_rows = conn.execute(
+                "SELECT explanation_json, created_at FROM explanations WHERE activity_id = ? ORDER BY created_at ASC",
+                (act["id"],),
+            ).fetchall()
+            act["explanations"] = [
+                {**json.loads(r["explanation_json"]), "created_at": r["created_at"]}
+                for r in expl_rows
+            ]
+
+            result.append(act)
+
+        return result

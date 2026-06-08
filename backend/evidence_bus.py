@@ -5,6 +5,7 @@ from typing import Dict, List, Optional
 from uuid import uuid4
 
 import reasoning
+import recordings_db
 from models import DetectionEvent, Activity
 
 ACTIVITY_GAP_SECONDS = 8.0    # quiet window before closing
@@ -145,6 +146,8 @@ class EvidenceBus:
             activity.latest_explanation = explanation
             self._event_counts_since_last_reason[activity_id] = 0
 
+            recordings_db.save_explanation(activity_id, explanation)
+
             await self.broadcast(
                 {
                     "type": "reasoning_update",
@@ -184,6 +187,8 @@ class EvidenceBus:
             print(f"[reasoning] explain_retrospective failed for {activity_id}: {exc}")
             summary = reasoning.fallback_explanation("Retrospective analysis unavailable.")
         activity.summary = summary
+
+        recordings_db.save_activity(activity)
 
         await self.broadcast(
             {

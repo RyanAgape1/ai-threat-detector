@@ -21,7 +21,7 @@ const App: React.FC = () => {
   } = useCamera();
 
   const { resolutions, resolve } = useResolutions();
-  const { recordings, loading: recordingsLoading, refresh: refreshRecordings, deleteRecording, getVideoUrl } = useRecordings();
+  const { recordings, loading: recordingsLoading, refresh: refreshRecordings, deleteRecording, getVideoUrl, fetchActivities } = useRecordings();
   const [recordingsOpen, setRecordingsOpen] = useState(false);
 
   // Auto-refresh recordings shortly after camera stops so the new recording is available
@@ -90,6 +90,7 @@ const App: React.FC = () => {
         onRefresh={refreshRecordings}
         onDelete={deleteRecording}
         getVideoUrl={getVideoUrl}
+        fetchActivities={fetchActivities}
       />
     </div>
   );

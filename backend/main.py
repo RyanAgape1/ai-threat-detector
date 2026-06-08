@@ -280,6 +280,14 @@ async def get_recording_video(recording_id: str) -> FileResponse:
     return FileResponse(filepath, media_type="video/mp4", filename=rec["filename"])
 
 
+@app.get("/recordings/{recording_id}/activities")
+async def get_recording_activities(recording_id: str) -> list[dict]:
+    rec = recordings_db.get_recording(recording_id)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="Recording not found")
+    return recordings_db.get_activities_for_recording(recording_id)
+
+
 @app.delete("/recordings/{recording_id}")
 async def delete_recording(recording_id: str) -> dict:
     filepath = recordings_db.delete_recording_row(recording_id)
