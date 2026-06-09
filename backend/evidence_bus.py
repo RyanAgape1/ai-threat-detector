@@ -8,9 +8,11 @@ import reasoning
 import recordings_db
 from models import DetectionEvent, Activity
 
-ACTIVITY_GAP_SECONDS = 8.0    # quiet window before closing
-REASON_EVERY_N_EVENTS = 3     # trigger reasoning every N new events
-REASON_INTERVAL_SECONDS = 5.0 # also trigger every 5 s while activity is active
+ACTIVITY_GAP_SECONDS = 8.0      # quiet window before closing
+REASON_EVERY_N_EVENTS = 3       # trigger reasoning every N new events
+REASON_INTERVAL_SECONDS = 5.0   # also trigger every 5 s while activity is active
+CLEANUP_INTERVAL_SECONDS = 300  # run memory cleanup every 5 minutes
+ACTIVITY_MAX_AGE_SECONDS = 3600 # evict closed activities older than 1 hour
 
 
 class EvidenceBus:
@@ -32,6 +34,16 @@ class EvidenceBus:
 
         # Rolling buffer of representative frames per activity (last 4 base64 JPEGs)
         self._frames: Dict[str, List[str]] = {}
+
+        self._cleanup_task: Optional[asyncio.Task] = None
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def start(self) -> None:
+        """Start background tasks. Must be called after the event loop is running."""
+        self._cleanup_task = asyncio.create_task(self._cleanup_loop())
 
     # ------------------------------------------------------------------
     # Public API
@@ -202,3 +214,30 @@ class EvidenceBus:
         self._event_counts_since_last_reason.pop(activity_id, None)
         self._locks.pop(activity_id, None)
         self._frames.pop(activity_id, None)
+
+    # ------------------------------------------------------------------
+    # Memory cleanup
+    # ------------------------------------------------------------------
+
+    async def _cleanup_loop(self) -> None:
+        while True:
+            await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
+            await self._cleanup_old_activities()
+
+    async def _cleanup_old_activities(self) -> None:
+        """Remove closed activities older than ACTIVITY_MAX_AGE_SECONDS from memory.
+        They are already persisted in the DB so nothing is lost."""
+        now = time.time()
+        to_remove = [
+            aid for aid, activity in self.activities.items()
+            if activity.status == "closed"
+            and activity.closed_at is not None
+            and now - activity.closed_at > ACTIVITY_MAX_AGE_SECONDS
+        ]
+        if not to_remove:
+            return
+        for aid in to_remove:
+            self.activities.pop(aid, None)
+        print(f"[cleanup] evicted {len(to_remove)} closed activities older than 1 hour from memory")
+        remaining = [a.model_dump() for a in self.activities.values()]
+        await self.broadcast({"type": "all_activities", "activities": remaining})

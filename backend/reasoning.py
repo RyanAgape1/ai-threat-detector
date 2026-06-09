@@ -38,6 +38,10 @@ def _get_client() -> AsyncOpenAI:
     global _client
     if _client is None:
         _client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        #_client = AsyncOpenAI(
+        #    base_url="http://localhost:11434/v1",
+        #    api_key="ollama"
+        #)
     return _client
 
 
@@ -130,6 +134,7 @@ async def explain_live(
 
     response = await client.chat.completions.create(
         model="gpt-4o",
+        #model="gemma4:12b",
         max_tokens=1024,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -170,6 +175,7 @@ async def explain_retrospective(
 
     response = await client.chat.completions.create(
         model="gpt-4o",
+        #model="gemma4:12b",
         max_tokens=1024,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},

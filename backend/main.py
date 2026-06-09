@@ -67,6 +67,7 @@ async def lifespan(app: FastAPI):
     recordings_db.init_db()
 
     bus = EvidenceBus(broadcast_fn=broadcast)
+    bus.start()
     video_processor = VideoProcessor(bus_ingest=bus.ingest, broadcast_fn=broadcast)
     stream_processor = StreamProcessor(recordings_dir=str(RECORDINGS_DIR))
 
@@ -74,6 +75,9 @@ async def lifespan(app: FastAPI):
 
     print("Backend running on http://localhost:8000")
     yield
+
+    if bus._cleanup_task:
+        bus._cleanup_task.cancel()
 
 
 # ---------------------------------------------------------------------------
