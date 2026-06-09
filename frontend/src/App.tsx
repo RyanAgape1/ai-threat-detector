@@ -34,9 +34,10 @@ const App: React.FC = () => {
 
   const selectedActivity = activities.find((a) => a.id === selectedId) ?? null;
 
-  // Find the recording that covers the selected (closed) activity's time range
+  // Find the recording that covers the selected activity's time range.
+  // Works for both active and closed activities so seek works before reasoning finishes.
   const matchingRecording =
-    selectedActivity?.status === 'closed' && !cameraActive
+    selectedActivity !== null && !cameraActive
       ? (recordings.find(
           (r) =>
             r.started_at <= selectedActivity.started_at + 5 &&

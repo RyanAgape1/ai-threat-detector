@@ -29,6 +29,7 @@ RECORDINGS_DIR = Path(__file__).parent / "recordings"
 
 connected_websockets: set[WebSocket] = set()
 _ws_lock = asyncio.Lock()
+_frame_lock = asyncio.Lock()  # serialises YOLO calls — model is not thread-safe
 
 
 async def broadcast(message: dict) -> None:
@@ -223,7 +224,8 @@ async def stream_frame(frame: UploadFile = File(...)) -> dict:
     """Accept a single JPEG frame from the browser camera, run detection, feed events."""
     contents = await frame.read()
     loop = asyncio.get_event_loop()
-    events, frame_b64 = await loop.run_in_executor(None, stream_processor.process_frame_bytes, contents)
+    async with _frame_lock:
+        events, frame_b64 = await loop.run_in_executor(None, stream_processor.process_frame_bytes, contents)
     for event in events:
         await bus.ingest(event, frame_b64)
     return {"status": "ok", "events": len(events)}

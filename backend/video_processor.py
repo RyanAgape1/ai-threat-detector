@@ -186,7 +186,7 @@ class StreamProcessor:
                     writer = cv2.VideoWriter(self._rec_path, fourcc, 2.0, (w, h))
                     if writer.isOpened():
                         self._writer = writer
-                        print(f"[recording] started ({codec}) → {self._rec_path} ({w}x{h})")
+                        print(f"[recording] started ({codec}) -> {self._rec_path} ({w}x{h})")
                         break
                     writer.release()
                 else:

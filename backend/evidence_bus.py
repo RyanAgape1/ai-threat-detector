@@ -189,31 +189,49 @@ class EvidenceBus:
         if tick_task is not None:
             tick_task.cancel()
 
+        # Close immediately — don't block on slow local inference
         activity.status = "closed"
         activity.closed_at = time.time()
 
-        frames = list(self._frames.get(activity_id, []))
+        self._close_timers.pop(activity_id, None)
+        self._event_counts_since_last_reason.pop(activity_id, None)
+        self._locks.pop(activity_id, None)
+
+        # Broadcast closed right away so the UI updates without waiting for reasoning
+        await self.broadcast(
+            {
+                "type": "activity_closed",
+                "activity_id": activity_id,
+                "summary": None,
+            }
+        )
+
+        # Run retrospective reasoning in the background; summary arrives via reasoning_update
+        frames = list(self._frames.pop(activity_id, []))
+        asyncio.create_task(self._finalize_activity(activity_id, frames))
+
+    async def _finalize_activity(self, activity_id: str, frames: list) -> None:
+        """Generate the retrospective summary after the activity is already closed."""
+        activity = self.activities.get(activity_id)
+        if activity is None:
+            return
+
         try:
             summary = await reasoning.explain_retrospective(activity.events, frames)
         except Exception as exc:
             print(f"[reasoning] explain_retrospective failed for {activity_id}: {exc}")
             summary = reasoning.fallback_explanation("Retrospective analysis unavailable.")
-        activity.summary = summary
 
+        activity.summary = summary
         recordings_db.save_activity(activity)
 
         await self.broadcast(
             {
-                "type": "activity_closed",
+                "type": "reasoning_update",
                 "activity_id": activity_id,
-                "summary": summary.model_dump(),
+                "explanation": summary.model_dump(),
             }
         )
-
-        self._close_timers.pop(activity_id, None)
-        self._event_counts_since_last_reason.pop(activity_id, None)
-        self._locks.pop(activity_id, None)
-        self._frames.pop(activity_id, None)
 
     # ------------------------------------------------------------------
     # Memory cleanup
