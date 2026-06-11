@@ -26,6 +26,7 @@ export interface Activity {
   events: DetectionEvent[];
   latest_explanation: Explanation | null;
   summary: Explanation | null;
+  camera_id: string | null;
 }
 
 export interface UploadProgress {

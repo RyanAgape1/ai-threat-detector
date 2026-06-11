@@ -15,10 +15,17 @@ const App: React.FC = () => {
   } = useWebSocket();
 
   const {
-    cameras, selectedCameraId, setSelectedCameraId,
-    cameraActive, cameraStream, videoRef,
-    startCamera, stopCamera,
+    cameras, sessions, startCamera, stopCamera,
   } = useCamera();
+  const cameraActive = sessions.length > 0;
+
+  const [cameraFilter, setCameraFilter] = useState<string | null>(null);
+  // Clear filter if the filtered camera session is stopped
+  useEffect(() => {
+    if (cameraFilter && !sessions.some((s) => s.sessionId === cameraFilter)) {
+      setCameraFilter(null);
+    }
+  }, [sessions, cameraFilter]);
 
   const { resolutions, resolve } = useResolutions();
   const { recordings, loading: recordingsLoading, refresh: refreshRecordings, deleteRecording, getVideoUrl, fetchActivities } = useRecordings();
@@ -56,9 +63,7 @@ const App: React.FC = () => {
         onUploadVideo={uploadVideo}
         uploadProgress={uploadProgress}
         cameras={cameras}
-        selectedCameraId={selectedCameraId}
-        onSelectCamera={setSelectedCameraId}
-        cameraActive={cameraActive}
+        sessions={sessions}
         onStartCamera={startCamera}
         onStopCamera={stopCamera}
         onClearAll={clearAll}
@@ -70,16 +75,18 @@ const App: React.FC = () => {
           selectedId={selectedId}
           onSelect={setSelectedId}
           resolutions={resolutions}
+          cameraFilter={cameraFilter}
         />
         <ReasoningPanel
           activity={selectedActivity}
           videoUrl={cameraActive ? null : effectiveVideoUrl}
-          cameraStream={cameraStream}
-          videoRef={videoRef}
+          cameraSessions={sessions}
           snapshots={snapshots}
           resolution={selectedActivity ? (resolutions[selectedActivity.id] ?? null) : null}
           onResolve={(decision) => selectedActivity && resolve(selectedActivity.id, decision)}
           recordingStartedAt={recordingStartedAt}
+          cameraFilter={cameraFilter}
+          onCameraFilterChange={setCameraFilter}
         />
       </div>
 

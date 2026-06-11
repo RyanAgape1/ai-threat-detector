@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { Activity, DetectionEvent, Explanation } from '../types';
+import type { CameraSession } from '../hooks/useCamera';
 import type { Resolution } from '../hooks/useResolutions';
 import { ExplanationView } from './ExplanationView';
 import {
@@ -15,15 +16,18 @@ import {
 interface ReasoningPanelProps {
   activity: Activity | null;
   videoUrl: string | null;
-  cameraStream: MediaStream | null;
-  videoRef: React.RefObject<HTMLVideoElement>;
+  cameraSessions: CameraSession[];
   snapshots: Record<string, string>;
   resolution: Resolution | null;
   onResolve: (decision: 'all_clear' | 'threat') => void;
   recordingStartedAt: number | null;
+  cameraFilter: string | null;
+  onCameraFilterChange: (id: string | null) => void;
 }
 
-export const ReasoningPanel: React.FC<ReasoningPanelProps> = ({ activity, videoUrl, cameraStream, videoRef, snapshots, resolution, onResolve, recordingStartedAt }) => {
+export const ReasoningPanel: React.FC<ReasoningPanelProps> = ({ activity, videoUrl, cameraSessions, snapshots, resolution, onResolve, recordingStartedAt, cameraFilter, onCameraFilterChange }) => {
+  // Internal video ref used for seeking in recording/upload playback
+  const videoRef = useRef<HTMLVideoElement>(null);
   const [previewSnapshot, setPreviewSnapshot] = useState<string | null>(null);
 
   // Clear snapshot preview when the selected activity changes
@@ -57,12 +61,12 @@ export const ReasoningPanel: React.FC<ReasoningPanelProps> = ({ activity, videoU
 
   const clearSnapshot = useCallback(() => setPreviewSnapshot(null), []);
 
-  const hasVideo = cameraStream !== null || videoUrl !== null;
+  const hasVideo = cameraSessions.length > 0 || videoUrl !== null;
 
   if (!activity) {
     return (
       <div className="flex-1 flex flex-col bg-dash-bg overflow-hidden">
-        {hasVideo && <VideoPreview videoUrl={videoUrl} cameraStream={cameraStream} videoRef={videoRef} snapshotPreview={previewSnapshot} onClearSnapshot={clearSnapshot} isRecording={recordingStartedAt !== null} />}
+        {hasVideo && <VideoPreview videoUrl={videoUrl} cameraSessions={cameraSessions} videoRef={videoRef} snapshotPreview={previewSnapshot} onClearSnapshot={clearSnapshot} isRecording={recordingStartedAt !== null} cameraFilter={cameraFilter} onCameraFilterChange={onCameraFilterChange} />}
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center space-y-3">
             <div className="text-4xl opacity-20">⬅</div>
@@ -85,39 +89,47 @@ export const ReasoningPanel: React.FC<ReasoningPanelProps> = ({ activity, videoU
       <ActivityHeader activity={activity} />
 
       {/* Video preview — sits between header and scrollable body */}
-      {hasVideo && <VideoPreview videoUrl={videoUrl} cameraStream={cameraStream} videoRef={videoRef} snapshotPreview={previewSnapshot} onClearSnapshot={clearSnapshot} isRecording={recordingStartedAt !== null} />}
+      {hasVideo && <VideoPreview videoUrl={videoUrl} cameraSessions={cameraSessions} videoRef={videoRef} snapshotPreview={previewSnapshot} onClearSnapshot={clearSnapshot} isRecording={recordingStartedAt !== null} cameraFilter={cameraFilter} onCameraFilterChange={onCameraFilterChange} />}
 
       {/* Scrollable body */}
       <div className="flex-1 overflow-y-auto p-5 space-y-6">
         {/* Evidence timeline */}
         <section>
-          <div className="flex items-center gap-2 mb-3">
-            <h2 className="font-mono text-[10px] font-semibold tracking-widest text-gray-600 uppercase">
-              Evidence Timeline
-            </h2>
-            <div className="flex-1 h-px bg-dash-border" />
-            <span className="font-mono text-[10px] text-gray-700">
-              {activity.events.length} events
-            </span>
-          </div>
+          {(() => {
+            const allEvents = [...activity.events].sort((a, b) => a.timestamp - b.timestamp);
+            const displayedEvents = cameraFilter
+              ? allEvents.filter((e) => (e.metadata.camera_id as string | undefined) === cameraFilter)
+              : allEvents;
+            return (
+              <>
+                <div className="flex items-center gap-2 mb-3">
+                  <h2 className="font-mono text-[10px] font-semibold tracking-widest text-gray-600 uppercase">
+                    Evidence Timeline
+                  </h2>
+                  <div className="flex-1 h-px bg-dash-border" />
+                  <span className="font-mono text-[10px] text-gray-700">
+                    {displayedEvents.length}{cameraFilter && displayedEvents.length !== allEvents.length ? `/${allEvents.length}` : ''} events
+                  </span>
+                </div>
 
-          {activity.events.length === 0 ? (
-            <p className="text-xs text-gray-700 font-mono italic">No events recorded</p>
-          ) : (
-            <div className="space-y-1.5">
-              {[...activity.events]
-                .sort((a, b) => a.timestamp - b.timestamp)
-                .map((event) => (
-                  <EventRow
-                    key={event.id}
-                    event={event}
-                    onEventClick={handleEventClick}
-                    snapshot={snapshots[event.id]}
-                    seekable={videoUrl !== null || recordingStartedAt !== null}
-                  />
-                ))}
-            </div>
-          )}
+                {displayedEvents.length === 0 ? (
+                  <p className="text-xs text-gray-700 font-mono italic">No events from this camera</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {displayedEvents.map((event) => (
+                      <EventRow
+                        key={event.id}
+                        event={event}
+                        onEventClick={handleEventClick}
+                        snapshot={snapshots[event.id]}
+                        seekable={(videoUrl !== null || recordingStartedAt !== null) && cameraSessions.length === 0}
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
+            );
+          })()}
         </section>
 
         {/* AI Reasoning */}
@@ -310,25 +322,37 @@ const EventRow: React.FC<{
 
 interface VideoPreviewProps {
   videoUrl: string | null;
-  cameraStream: MediaStream | null;
+  cameraSessions: CameraSession[];
   videoRef: React.RefObject<HTMLVideoElement>;
   snapshotPreview: string | null;
   onClearSnapshot: () => void;
   isRecording?: boolean;
+  cameraFilter: string | null;
+  onCameraFilterChange: (id: string | null) => void;
 }
 
-const VideoPreview: React.FC<VideoPreviewProps> = ({ videoUrl, cameraStream, videoRef, snapshotPreview, onClearSnapshot, isRecording = false }) => {
-  const isLive = cameraStream !== null;
+const VideoPreview: React.FC<VideoPreviewProps> = ({
+  videoUrl,
+  cameraSessions,
+  videoRef,
+  snapshotPreview,
+  onClearSnapshot,
+  isRecording = false,
+  cameraFilter,
+  onCameraFilterChange,
+}) => {
+  const isLive = cameraSessions.length > 0;
+  // Only show sessions that match the filter (or all if no filter)
+  const visibleSessions = cameraFilter
+    ? cameraSessions.filter((s) => s.sessionId === cameraFilter)
+    : cameraSessions;
 
-  // Single video element — swap srcObject (camera) / src (upload) imperatively.
+  // Wire up the recording video element when not in camera mode
   useEffect(() => {
+    if (isLive) return;
     const el = videoRef.current;
     if (!el) return;
-    if (cameraStream) {
-      el.srcObject = cameraStream;
-      el.removeAttribute('src');
-      el.play().catch(() => {});
-    } else if (videoUrl) {
+    if (videoUrl) {
       el.srcObject = null;
       el.src = videoUrl;
       el.play().catch(() => {});
@@ -336,39 +360,64 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({ videoUrl, cameraStream, vid
       el.srcObject = null;
       el.removeAttribute('src');
     }
-  }, [cameraStream, videoUrl, videoRef]);
+  }, [isLive, videoUrl, videoRef]);
+
+  const headerLabel = snapshotPreview
+    ? 'Captured Frame'
+    : isLive
+    ? cameraFilter
+      ? (cameraSessions.find((s) => s.sessionId === cameraFilter)?.label ?? 'Live Camera')
+      : cameraSessions.length === 1
+      ? 'Live Camera'
+      : `Live — ${cameraSessions.length} cameras`
+    : isRecording
+    ? 'Recording'
+    : 'Video Feed';
 
   return (
     <div className="shrink-0 border-b border-dash-border bg-black">
       <div className="flex items-center justify-between px-4 py-1.5 bg-dash-panel border-b border-dash-border">
         <div className="flex items-center gap-2">
-          <div className={`w-1.5 h-1.5 rounded-full ${snapshotPreview ? 'bg-yellow-500' : isLive ? 'bg-red-500 animate-pulse' : 'bg-gray-600'}`} />
+          <div
+            className={`w-1.5 h-1.5 rounded-full ${
+              snapshotPreview ? 'bg-yellow-500' : isLive ? 'bg-red-500 animate-pulse' : 'bg-gray-600'
+            }`}
+          />
           <span className="font-mono text-[9px] font-semibold tracking-widest text-gray-500 uppercase">
-            {snapshotPreview ? 'Captured Frame' : isLive ? 'Live Camera' : isRecording ? 'Recording' : 'Video Feed'}
+            {headerLabel}
           </span>
         </div>
-        {snapshotPreview && (
-          <button
-            onClick={onClearSnapshot}
-            className="font-mono text-[9px] text-gray-500 hover:text-gray-300 tracking-widest uppercase transition-colors"
-          >
-            ← {isLive ? 'Back to Live' : 'Back to Video'}
-          </button>
-        )}
+
+        <div className="flex items-center gap-3">
+          {/* Camera filter dropdown — only when multiple cameras are live */}
+          {isLive && cameraSessions.length > 1 && !snapshotPreview && (
+            <select
+              value={cameraFilter ?? ''}
+              onChange={(e) => onCameraFilterChange(e.target.value || null)}
+              className="font-mono text-[9px] bg-gray-900 border border-dash-border text-gray-400
+                rounded px-2 py-0.5 focus:outline-none focus:border-gray-600 cursor-pointer"
+            >
+              <option value="">All Cameras</option>
+              {cameraSessions.map((s) => (
+                <option key={s.sessionId} value={s.sessionId}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
+          )}
+
+          {snapshotPreview && (
+            <button
+              onClick={onClearSnapshot}
+              className="font-mono text-[9px] text-gray-500 hover:text-gray-300 tracking-widest uppercase transition-colors"
+            >
+              {isLive ? '← Back to Live' : '← Back to Video'}
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* Video element stays mounted so srcObject / frame capture keep running */}
-      <video
-        ref={videoRef}
-        autoPlay
-        muted
-        playsInline
-        controls={!isLive && !snapshotPreview}
-        loop={!isLive && !snapshotPreview}
-        className={`w-full max-h-48 object-contain bg-black block ${snapshotPreview ? 'hidden' : ''}`}
-      />
-
-      {/* Snapshot preview replaces the video display */}
+      {/* Snapshot preview */}
       {snapshotPreview && (
         <img
           src={`data:image/jpeg;base64,${snapshotPreview}`}
@@ -376,6 +425,72 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({ videoUrl, cameraStream, vid
           className="w-full max-h-48 object-contain bg-black block"
         />
       )}
+
+      {/* Camera grid — ALL sessions always mounted so frame capture keeps running.
+          Filter (visibleSessions) only controls which tiles are displayed. */}
+      {isLive && (
+        <div className={snapshotPreview ? 'hidden' : ''}>
+          {/* Hidden tiles for sessions filtered out — keeps video elements alive */}
+          {cameraSessions
+            .filter((s) => !visibleSessions.includes(s))
+            .map((session) => (
+              <div key={session.sessionId} className="hidden">
+                <CameraFeedItem session={session} />
+              </div>
+            ))}
+          {/* Visible grid */}
+          <div
+            className={`grid ${visibleSessions.length === 1 ? 'grid-cols-1' : 'grid-cols-2'}`}
+          >
+            {visibleSessions.map((session) => (
+              <CameraFeedItem key={session.sessionId} session={session} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Recording / upload playback */}
+      {!isLive && !snapshotPreview && (
+        <video
+          ref={videoRef}
+          autoPlay
+          muted
+          playsInline
+          controls
+          loop
+          className="w-full max-h-48 object-contain bg-black block"
+        />
+      )}
+    </div>
+  );
+};
+
+/* Individual live camera feed tile */
+const CameraFeedItem: React.FC<{ session: CameraSession }> = ({ session }) => {
+  useEffect(() => {
+    const el = session.videoRef.current;
+    if (!el) return;
+    el.srcObject = session.stream;
+    el.play().catch(() => {});
+    return () => {
+      if (el.srcObject) el.srcObject = null;
+    };
+  }, [session]);
+
+  return (
+    <div className="relative bg-black">
+      <video
+        ref={session.videoRef}
+        autoPlay
+        muted
+        playsInline
+        className="w-full max-h-48 object-contain block"
+      />
+      <div className="absolute bottom-1 left-1">
+        <span className="font-mono text-[9px] bg-black/70 text-gray-300 px-1.5 py-0.5 rounded truncate max-w-[120px] block">
+          {session.label}
+        </span>
+      </div>
     </div>
   );
 };

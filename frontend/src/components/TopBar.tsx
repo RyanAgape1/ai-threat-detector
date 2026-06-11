@@ -1,5 +1,5 @@
-import React, { useRef } from 'react';
-import type { CameraDevice } from '../hooks/useCamera';
+import React, { useRef, useState } from 'react';
+import type { CameraDevice, CameraSession } from '../hooks/useCamera';
 import type { UploadProgress } from '../types';
 
 interface TopBarProps {
@@ -7,11 +7,9 @@ interface TopBarProps {
   onUploadVideo: (file: File) => void;
   uploadProgress: UploadProgress | null;
   cameras: CameraDevice[];
-  selectedCameraId: string;
-  onSelectCamera: (id: string) => void;
-  cameraActive: boolean;
-  onStartCamera: () => void;
-  onStopCamera: () => void;
+  sessions: CameraSession[];
+  onStartCamera: (deviceId: string) => Promise<void>;
+  onStopCamera: (sessionId: string) => void;
   onClearAll: () => void;
   onOpenRecordings: () => void;
 }
@@ -21,15 +19,21 @@ export const TopBar: React.FC<TopBarProps> = ({
   onUploadVideo,
   uploadProgress,
   cameras,
-  selectedCameraId,
-  onSelectCamera,
-  cameraActive,
+  sessions,
   onStartCamera,
   onStopCamera,
   onClearAll,
   onOpenRecordings,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [starting, setStarting] = useState(false);
+
+  // Cameras not currently in an active session
+  const activeDeviceIds = new Set(sessions.map((s) => s.deviceId));
+  const inactiveCameras = cameras.filter((c) => !activeDeviceIds.has(c.deviceId));
+
+  // True when no more cameras are available to start
+  const allCamerasActive = cameras.length > 0 && inactiveCameras.length === 0;
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -39,15 +43,29 @@ export const TopBar: React.FC<TopBarProps> = ({
     }
   };
 
+  const handleStartCamera = async () => {
+    if (starting) return;
+    setStarting(true);
+    try {
+      // Use the first known inactive device ID, or '' to let the browser pick
+      await onStartCamera(inactiveCameras[0]?.deviceId ?? '');
+    } finally {
+      setStarting(false);
+    }
+  };
+
   const isUploading = uploadProgress !== null && uploadProgress.status === 'processing';
-  const pct = uploadProgress && uploadProgress.total_frames > 0
-    ? Math.round((uploadProgress.current_frame / uploadProgress.total_frames) * 100)
-    : null;
+  const pct =
+    uploadProgress && uploadProgress.total_frames > 0
+      ? Math.round((uploadProgress.current_frame / uploadProgress.total_frames) * 100)
+      : null;
+
+  const cameraActive = sessions.length > 0;
 
   return (
-    <header className="flex items-center justify-between px-6 py-3 bg-dash-panel border-b border-dash-border shrink-0">
+    <header className="flex items-center justify-between px-6 py-3 bg-dash-panel border-b border-dash-border shrink-0 gap-4 flex-wrap">
       {/* Left: title */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 shrink-0">
         <div className="w-2 h-8 bg-red-500 rounded-sm opacity-90" />
         <h1 className="font-mono text-sm font-bold tracking-[0.2em] text-gray-100 uppercase select-none">
           Anomaly Explanation Engine
@@ -55,7 +73,7 @@ export const TopBar: React.FC<TopBarProps> = ({
       </div>
 
       {/* Right: status + controls */}
-      <div className="flex items-center gap-5">
+      <div className="flex items-center gap-4 flex-wrap">
         {/* Upload progress indicator */}
         {uploadProgress && (
           <div className="flex items-center gap-2 min-w-0">
@@ -66,9 +84,11 @@ export const TopBar: React.FC<TopBarProps> = ({
             {uploadProgress.status === 'error' && <span className="text-red-400 text-xs">✗</span>}
             <div className="flex flex-col gap-0.5 max-w-[160px]">
               <span className="font-mono text-[10px] text-gray-400 truncate">
-                {uploadProgress.status === 'done' ? 'Analysis complete' :
-                 uploadProgress.status === 'error' ? 'Upload failed' :
-                 uploadProgress.filename}
+                {uploadProgress.status === 'done'
+                  ? 'Analysis complete'
+                  : uploadProgress.status === 'error'
+                  ? 'Upload failed'
+                  : uploadProgress.filename}
               </span>
               {isUploading && pct !== null && (
                 <div className="w-full h-1 bg-gray-800 rounded-full overflow-hidden">
@@ -100,34 +120,37 @@ export const TopBar: React.FC<TopBarProps> = ({
         </div>
 
         {/* Divider */}
-        <div className="w-px h-5 bg-dash-border-bright" />
+        <div className="w-px h-5 bg-dash-border-bright shrink-0" />
 
-        {/* Camera selector + start/stop */}
-        <div className="flex items-center gap-2">
-          {cameras.length > 0 && !cameraActive && (
-            <select
-              value={selectedCameraId}
-              onChange={(e) => onSelectCamera(e.target.value)}
-              className="font-mono text-[10px] bg-gray-900 border border-dash-border text-gray-400
-                rounded px-2 py-1.5 max-w-[140px] truncate focus:outline-none focus:border-gray-600"
+        {/* Camera controls */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Active session stop buttons */}
+          {sessions.map((session) => (
+            <button
+              key={session.sessionId}
+              onClick={() => onStopCamera(session.sessionId)}
+              className="flex items-center gap-2 font-mono text-xs font-semibold tracking-widest uppercase px-4 py-1.5 rounded
+                border transition-all duration-200 select-none
+                bg-red-900/40 border-red-700/60 text-red-300 hover:bg-red-900/60"
+              title={`Stop ${session.label}`}
             >
-              {cameras.map((cam) => (
-                <option key={cam.deviceId} value={cam.deviceId}>
-                  {cam.label}
-                </option>
-              ))}
-            </select>
-          )}
+              <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse shrink-0" />
+              <span className="max-w-[100px] truncate normal-case">{session.label}</span>
+              <span>⏹ Stop</span>
+            </button>
+          ))}
+
+          {/* Start Camera button — always visible; disabled only when all cameras already active */}
           <button
-            onClick={cameraActive ? onStopCamera : onStartCamera}
-            className={`font-mono text-xs font-semibold tracking-widest uppercase px-4 py-1.5 rounded
+            onClick={handleStartCamera}
+            disabled={starting || allCamerasActive}
+            className="font-mono text-xs font-semibold tracking-widest uppercase px-4 py-1.5 rounded
               border transition-all duration-200 select-none
-              ${cameraActive
-                ? 'bg-red-900/40 border-red-700/60 text-red-300 hover:bg-red-900/60'
-                : 'bg-violet-900/30 border-violet-700/50 text-violet-300 hover:bg-violet-900/50 hover:border-violet-600'
-              }`}
+              bg-violet-900/30 border-violet-700/50 text-violet-300
+              hover:bg-violet-900/50 hover:border-violet-600
+              disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {cameraActive ? '⏹ Stop Camera' : '📷 Start Camera'}
+            {starting ? '...' : '📷 Start Camera'}
           </button>
         </div>
 
@@ -174,7 +197,6 @@ export const TopBar: React.FC<TopBarProps> = ({
         >
           ◉ Recordings
         </button>
-
       </div>
     </header>
   );

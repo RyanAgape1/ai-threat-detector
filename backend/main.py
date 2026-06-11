@@ -4,7 +4,7 @@ import os
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 from uuid import uuid4
 
 from dotenv import load_dotenv
@@ -29,7 +29,10 @@ RECORDINGS_DIR = Path(__file__).parent / "recordings"
 
 connected_websockets: set[WebSocket] = set()
 _ws_lock = asyncio.Lock()
-_frame_lock = asyncio.Lock()  # serialises YOLO calls — model is not thread-safe
+
+# Per-session state for live camera streams
+stream_processors: Dict[str, "StreamProcessor"] = {}
+_frame_locks: Dict[str, asyncio.Lock] = {}
 
 
 async def broadcast(message: dict) -> None:
@@ -57,12 +60,11 @@ async def broadcast(message: dict) -> None:
 
 bus: Optional[EvidenceBus] = None
 video_processor: Optional[VideoProcessor] = None
-stream_processor: Optional[StreamProcessor] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global bus, video_processor, stream_processor
+    global bus, video_processor
 
     RECORDINGS_DIR.mkdir(exist_ok=True)
     recordings_db.init_db()
@@ -70,7 +72,6 @@ async def lifespan(app: FastAPI):
     bus = EvidenceBus(broadcast_fn=broadcast)
     bus.start()
     video_processor = VideoProcessor(bus_ingest=bus.ingest, broadcast_fn=broadcast)
-    stream_processor = StreamProcessor(recordings_dir=str(RECORDINGS_DIR))
 
     await asyncio.get_event_loop().run_in_executor(None, detector.load_model)
 
@@ -79,6 +80,13 @@ async def lifespan(app: FastAPI):
 
     if bus._cleanup_task:
         bus._cleanup_task.cancel()
+    # Finalize any active camera recordings on shutdown
+    for sid, proc in list(stream_processors.items()):
+        meta = proc.stop_recording()
+        if meta:
+            recordings_db.save_recording(**meta, session_id=sid)
+    stream_processors.clear()
+    _frame_locks.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +135,10 @@ async def clear_activities() -> dict:
     bus._close_timers.clear()
     bus._event_counts_since_last_reason.clear()
     bus._frames.clear()
-    stream_processor.reset()
+    for proc in list(stream_processors.values()):
+        proc.reset()
+    stream_processors.clear()
+    _frame_locks.clear()
     await broadcast({"type": "all_activities", "activities": []})
     return {"status": "cleared"}
 
@@ -219,14 +230,31 @@ async def upload_status(job_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
+@app.post("/stream/start")
+async def stream_start(camera_label: str = Form("")) -> dict:
+    """Create a new camera session. Returns session_id for subsequent frame/audio/reset calls."""
+    session_id = str(uuid4())
+    stream_processors[session_id] = StreamProcessor(recordings_dir=str(RECORDINGS_DIR))
+    _frame_locks[session_id] = asyncio.Lock()
+    return {"session_id": session_id}
+
+
 @app.post("/stream/frame")
-async def stream_frame(frame: UploadFile = File(...)) -> dict:
-    """Accept a single JPEG frame from the browser camera, run detection, feed events."""
+async def stream_frame(
+    frame: UploadFile = File(...),
+    session_id: str = Form(...),
+) -> dict:
+    """Accept a single JPEG frame from a camera session, run detection, feed events."""
+    processor = stream_processors.get(session_id)
+    lock = _frame_locks.get(session_id)
+    if processor is None or lock is None:
+        raise HTTPException(status_code=404, detail="Session not found")
     contents = await frame.read()
     loop = asyncio.get_event_loop()
-    async with _frame_lock:
-        events, frame_b64 = await loop.run_in_executor(None, stream_processor.process_frame_bytes, contents)
+    async with lock:
+        events, frame_b64 = await loop.run_in_executor(None, processor.process_frame_bytes, contents)
     for event in events:
+        event.metadata["camera_id"] = session_id
         await bus.ingest(event, frame_b64)
     return {"status": "ok", "events": len(events)}
 
@@ -235,25 +263,30 @@ async def stream_frame(frame: UploadFile = File(...)) -> dict:
 async def stream_audio(
     audio: UploadFile = File(...),
     rms: float = Form(0.0),
+    session_id: str = Form(""),
 ) -> dict:
-    """Accept a 2-second audio chunk from the browser mic, run Whisper, inject real events."""
+    """Accept a 2-second audio chunk from a camera session, run Whisper, inject events."""
     contents = await audio.read()
     events = await audio_analyzer.analyze_audio_chunk(
         contents, audio.filename or "audio.webm", rms
     )
     for event in events:
+        if session_id:
+            event.metadata["camera_id"] = session_id
         await bus.ingest(event)
     return {"status": "ok", "events": len(events)}
 
 
 @app.post("/stream/reset")
-async def stream_reset() -> dict:
-    """Finalize recording and reset stream processor state (call when camera stops)."""
-    meta = stream_processor.stop_recording()
-    if meta:
-        recordings_db.save_recording(**meta)
-        print(f"[recording] saved {meta['filename']} ({meta['frame_count']} frames, {meta['duration_seconds']:.1f}s)")
-    stream_processor.reset()
+async def stream_reset(session_id: str = Form(...)) -> dict:
+    """Finalize recording and tear down a camera session."""
+    processor = stream_processors.pop(session_id, None)
+    _frame_locks.pop(session_id, None)
+    if processor is not None:
+        meta = processor.stop_recording()
+        if meta:
+            recordings_db.save_recording(**meta, session_id=session_id)
+            print(f"[recording] saved {meta['filename']} ({meta['frame_count']} frames, {meta['duration_seconds']:.1f}s)")
     return {"status": "reset"}
 
 

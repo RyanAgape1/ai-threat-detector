@@ -8,18 +8,23 @@ interface IncidentFeedProps {
   selectedId: string | null;
   onSelect: (id: string) => void;
   resolutions: Record<string, Resolution>;
+  cameraFilter: string | null;
 }
 
 export const IncidentFeed: React.FC<IncidentFeedProps> = ({
-  activities, selectedId, onSelect, resolutions,
+  activities, selectedId, onSelect, resolutions, cameraFilter,
 }) => {
+  // When a camera is selected, only show activities owned by that camera
+  const visibleActivities = cameraFilter
+    ? activities.filter((a) => a.camera_id === cameraFilter)
+    : activities;
   const [allClearOpen, setAllClearOpen] = useState(true);
   const [handledOpen, setHandledOpen] = useState(true);
 
-  const unresolved = activities.filter((a) => !resolutions[a.id]);
-  const allClear   = activities.filter((a) => resolutions[a.id]?.decision === 'all_clear');
-  const handled    = activities.filter((a) => resolutions[a.id]?.decision === 'threat');
-  const total = activities.length;
+  const unresolved = visibleActivities.filter((a) => !resolutions[a.id]);
+  const allClear   = visibleActivities.filter((a) => resolutions[a.id]?.decision === 'all_clear');
+  const handled    = visibleActivities.filter((a) => resolutions[a.id]?.decision === 'threat');
+  const total = visibleActivities.length;
 
   return (
     <aside className="w-[35%] min-w-[280px] flex flex-col border-r border-dash-border bg-dash-panel">
@@ -213,6 +218,18 @@ const ActivityCard: React.FC<ActivityCardProps> = ({ activity, selected, resolut
             </>
           )}
         </div>
+
+        {/* Camera source badge */}
+        {activity.camera_id && (
+          <div className="mb-1.5">
+            <span
+              className="font-mono text-[9px] bg-violet-900/40 border border-violet-800/50 text-violet-400 px-1.5 py-0.5 rounded"
+              title={`Camera session: ${activity.camera_id}`}
+            >
+              📷 {activity.camera_id.slice(0, 8)}
+            </span>
+          </div>
+        )}
 
         {/* Stats row */}
         <div className="flex items-center gap-3 mb-2">

@@ -32,3 +32,4 @@ class Activity(BaseModel):
     events: List[DetectionEvent] = []
     latest_explanation: Optional[Explanation] = None
     summary: Optional[Explanation] = None
+    camera_id: Optional[str] = None  # session_id of originating camera; None for uploaded video

@@ -24,18 +24,31 @@ def init_db() -> None:
                 filepath TEXT NOT NULL,
                 duration_seconds REAL NOT NULL,
                 frame_count INTEGER NOT NULL DEFAULT 0,
-                filesize_bytes INTEGER NOT NULL DEFAULT 0
+                filesize_bytes INTEGER NOT NULL DEFAULT 0,
+                session_id TEXT
             )
         """)
+        # Migrate existing databases that predate the session_id column
+        try:
+            conn.execute("ALTER TABLE recordings ADD COLUMN session_id TEXT")
+            conn.commit()
+        except Exception:
+            pass  # Column already exists
         conn.execute("""
             CREATE TABLE IF NOT EXISTS activities (
                 id TEXT PRIMARY KEY,
                 started_at REAL NOT NULL,
                 closed_at REAL,
                 status TEXT NOT NULL DEFAULT 'closed',
-                summary_json TEXT
+                summary_json TEXT,
+                camera_id TEXT
             )
         """)
+        try:
+            conn.execute("ALTER TABLE activities ADD COLUMN camera_id TEXT")
+            conn.commit()
+        except Exception:
+            pass  # Column already exists
         conn.execute("""
             CREATE TABLE IF NOT EXISTS detection_events (
                 id TEXT PRIMARY KEY,
@@ -74,15 +87,16 @@ def save_recording(
     duration_seconds: float,
     frame_count: int,
     filesize_bytes: int,
+    session_id: Optional[str] = None,
 ) -> None:
     with _connect() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO recordings
                (id, started_at, ended_at, filename, filepath,
-                duration_seconds, frame_count, filesize_bytes)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                duration_seconds, frame_count, filesize_bytes, session_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (id, started_at, ended_at, filename, filepath,
-             duration_seconds, frame_count, filesize_bytes),
+             duration_seconds, frame_count, filesize_bytes, session_id),
         )
         conn.commit()
 
@@ -125,14 +139,15 @@ def save_activity(activity) -> None:
     """Persist a closed activity with all its events. Called when activity closes."""
     with _connect() as conn:
         conn.execute(
-            """INSERT OR REPLACE INTO activities (id, started_at, closed_at, status, summary_json)
-               VALUES (?, ?, ?, ?, ?)""",
+            """INSERT OR REPLACE INTO activities (id, started_at, closed_at, status, summary_json, camera_id)
+               VALUES (?, ?, ?, ?, ?, ?)""",
             (
                 activity.id,
                 activity.started_at,
                 activity.closed_at,
                 activity.status,
                 json.dumps(activity.summary.model_dump()) if activity.summary else None,
+                getattr(activity, 'camera_id', None),
             ),
         )
         for event in activity.events:
@@ -165,21 +180,36 @@ def save_explanation(activity_id: str, explanation) -> None:
 
 
 def get_activities_for_recording(recording_id: str) -> list[dict]:
-    """Return all activities (with events + explanations) that fall within a recording's time window."""
+    """Return activities that belong to this recording's camera and time window.
+
+    Activities now carry a camera_id that matches the recording's session_id, so
+    filtering is a simple equality check rather than JSON extraction.
+    Legacy recordings (no session_id) return all time-overlapping activities.
+    """
     rec = get_recording(recording_id)
     if rec is None:
         return []
 
     window_start = rec["started_at"] - 5
     window_end = rec["ended_at"] + 5
+    session_id = rec.get("session_id")
 
     with _connect() as conn:
-        act_rows = conn.execute(
-            """SELECT * FROM activities
-               WHERE started_at <= ? AND (closed_at IS NULL OR closed_at >= ?)
-               ORDER BY started_at ASC""",
-            (window_end, window_start),
-        ).fetchall()
+        if session_id:
+            act_rows = conn.execute(
+                """SELECT * FROM activities
+                   WHERE started_at <= ? AND (closed_at IS NULL OR closed_at >= ?)
+                     AND camera_id = ?
+                   ORDER BY started_at ASC""",
+                (window_end, window_start, session_id),
+            ).fetchall()
+        else:
+            act_rows = conn.execute(
+                """SELECT * FROM activities
+                   WHERE started_at <= ? AND (closed_at IS NULL OR closed_at >= ?)
+                   ORDER BY started_at ASC""",
+                (window_end, window_start),
+            ).fetchall()
 
         result = []
         for act_row in act_rows:

@@ -50,10 +50,11 @@ class EvidenceBus:
     # ------------------------------------------------------------------
 
     async def ingest(self, event: DetectionEvent, frame_b64: Optional[str] = None) -> str:
-        activity = self._find_active_activity()
+        camera_id: Optional[str] = event.metadata.get("camera_id") if event.metadata else None
+        activity = self._find_active_activity(camera_id)
 
         if activity is None:
-            activity = self._create_activity()
+            activity = self._create_activity(camera_id)
             await self.broadcast({"type": "activity_opened", "activity": activity.model_dump()})
 
         activity_id = activity.id
@@ -93,10 +94,14 @@ class EvidenceBus:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _find_active_activity(self) -> Optional[Activity]:
+    def _find_active_activity(self, camera_id: Optional[str] = None) -> Optional[Activity]:
         now = time.time()
         for activity in self.activities.values():
             if activity.status != "active":
+                continue
+            # Each camera only matches its own activity slot; upload events only
+            # match activity slots that have no camera (camera_id is None).
+            if activity.camera_id != camera_id:
                 continue
             if activity.events:
                 last_ts = activity.events[-1].timestamp
@@ -104,12 +109,13 @@ class EvidenceBus:
                     return activity
         return None
 
-    def _create_activity(self) -> Activity:
+    def _create_activity(self, camera_id: Optional[str] = None) -> Activity:
         activity_id = str(uuid4())
         activity = Activity(
             id=activity_id,
             started_at=time.time(),
             status="active",
+            camera_id=camera_id,
         )
         self.activities[activity_id] = activity
         self._locks[activity_id] = asyncio.Lock()
