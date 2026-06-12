@@ -1,7 +1,9 @@
 import asyncio
 import base64
+import math
 import os
 import time
+from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 from uuid import uuid4
 
@@ -11,6 +13,27 @@ import numpy as np
 import audio_analyzer
 import detector
 from models import DetectionEvent
+
+
+# ---------------------------------------------------------------------------
+# Person tracking helpers
+# ---------------------------------------------------------------------------
+
+LOITERING_SECONDS = 30.0
+TRACK_TIMEOUT_SECONDS = 5.0   # drop a track if unseen for this long
+TRACK_MAX_DISTANCE = 0.35     # max normalised centroid distance to match (0–1 diagonal)
+
+
+@dataclass
+class _PersonTrack:
+    track_id: int
+    first_seen: float
+    last_seen: float
+    cx: float   # normalised centroid x (0–1)
+    cy: float   # normalised centroid y (0–1)
+    confidence: float = 0.0
+    announced: bool = False        # person_detected already emitted
+    loitering_emitted: bool = False  # loitering_detected already emitted
 
 
 class VideoProcessor:
@@ -161,6 +184,9 @@ class StreamProcessor:
         self._rec_start: Optional[float] = None
         self._rec_frames: int = 0
         self._writer: Optional[cv2.VideoWriter] = None
+        # Person tracking state
+        self._person_tracks: Dict[int, _PersonTrack] = {}
+        self._next_track_id: int = 0
 
     def process_frame_bytes(self, jpeg_bytes: bytes) -> Tuple[list, Optional[str]]:
         """Returns (events, frame_b64). frame_b64 is set only when events were detected."""
@@ -199,9 +225,12 @@ class StreamProcessor:
             print(f"[recording] write error: {exc}")
 
         is_first_frame = (self._frame_count == 0)
-        events = detector.detect(frame, self._prev_gray, self._frame_count, fps=2.0)
+        raw_events = detector.detect(frame, self._prev_gray, self._frame_count, fps=2.0)
         self._prev_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         self._frame_count += 1
+
+        h, w = frame.shape[:2]
+        events = self._apply_person_tracking(raw_events, w, h)
 
         # First frame of a new camera session: guarantee an activity opens even
         # if YOLO sees nothing yet (prev_gray is None, motion detection is skipped).
@@ -215,6 +244,116 @@ class StreamProcessor:
 
         frame_b64 = _encode_frame(frame) if events else None
         return events, frame_b64
+
+    def _apply_person_tracking(
+        self, raw_events: list, frame_w: int, frame_h: int
+    ) -> list:
+        """Replace raw person_detected events with tracked ones.
+
+        Emits person_detected once per new track, loitering_detected once
+        after LOITERING_SECONDS for the same track. All non-person events
+        pass through unchanged.
+        """
+        now = time.time()
+
+        # Separate person detections from everything else
+        person_events: List[DetectionEvent] = []
+        other_events: List[DetectionEvent] = []
+        for ev in raw_events:
+            if ev.type == 'person_detected':
+                person_events.append(ev)
+            else:
+                other_events.append(ev)
+
+        # Build normalised centroids for this frame's person detections
+        detections: List[Tuple[float, float, DetectionEvent]] = []
+        for ev in person_events:
+            bb = ev.metadata.get('bounding_box', {})
+            cx = (bb.get('x', 0) + bb.get('w', 0) / 2) / frame_w
+            cy = (bb.get('y', 0) + bb.get('h', 0) / 2) / frame_h
+            detections.append((cx, cy, ev))
+
+        # Expire old tracks
+        expired = [
+            tid for tid, t in self._person_tracks.items()
+            if now - t.last_seen > TRACK_TIMEOUT_SECONDS
+        ]
+        for tid in expired:
+            del self._person_tracks[tid]
+
+        # Greedy nearest-neighbour matching: for each detection find closest active track
+        matched_track_ids: set = set()
+        matched_det_indices: set = set()
+        # map track_id -> best detection index (for metadata)
+        track_to_det: Dict[int, int] = {}
+
+        if self._person_tracks and detections:
+            track_list = list(self._person_tracks.items())
+            for det_idx, (cx, cy, _ev) in enumerate(detections):
+                best_tid, best_dist = None, float('inf')
+                for tid, track in track_list:
+                    if tid in matched_track_ids:
+                        continue
+                    dist = math.sqrt((cx - track.cx) ** 2 + (cy - track.cy) ** 2)
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_tid = tid
+                if best_tid is not None and best_dist <= TRACK_MAX_DISTANCE:
+                    matched_track_ids.add(best_tid)
+                    matched_det_indices.add(det_idx)
+                    track_to_det[best_tid] = det_idx
+                    t = self._person_tracks[best_tid]
+                    t.last_seen = now
+                    t.cx = cx
+                    t.cy = cy
+                    t.confidence = _ev.confidence
+
+        # Create tracks for unmatched detections; record which det spawned each track
+        new_track_to_det: Dict[int, int] = {}
+        for det_idx, (cx, cy, _ev) in enumerate(detections):
+            if det_idx not in matched_det_indices:
+                tid = self._next_track_id
+                self._next_track_id += 1
+                self._person_tracks[tid] = _PersonTrack(
+                    track_id=tid,
+                    first_seen=now,
+                    last_seen=now,
+                    cx=cx,
+                    cy=cy,
+                    confidence=_ev.confidence,
+                )
+                new_track_to_det[tid] = det_idx
+
+        # Emit events based on track state
+        tracking_events: List[DetectionEvent] = []
+        for tid, track in self._person_tracks.items():
+            if not track.announced:
+                track.announced = True
+                det_idx = track_to_det.get(tid, new_track_to_det.get(tid))
+                if det_idx is not None:
+                    base_meta = {**detections[det_idx][2].metadata, 'track_id': tid}
+                else:
+                    base_meta = {'track_id': tid}
+                tracking_events.append(DetectionEvent(
+                    source='cv',
+                    type='person_detected',
+                    confidence=track.confidence,
+                    metadata=base_meta,
+                ))
+
+            elif not track.loitering_emitted and (now - track.first_seen) >= LOITERING_SECONDS:
+                track.loitering_emitted = True
+                tracking_events.append(DetectionEvent(
+                    source='behavior',
+                    type='loitering_detected',
+                    confidence=track.confidence,
+                    metadata={
+                        'track_id': tid,
+                        'duration_seconds': round(now - track.first_seen, 1),
+                    },
+                ))
+
+        return other_events + tracking_events
 
     def stop_recording(self) -> Optional[dict]:
         """Finalize the current recording and return its metadata, or None if nothing
@@ -249,3 +388,5 @@ class StreamProcessor:
     def reset(self):
         self._prev_gray = None
         self._frame_count = 0
+        self._person_tracks = {}
+        self._next_track_id = 0
