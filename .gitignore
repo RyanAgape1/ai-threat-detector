@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+
+# Virtual environment
+venv/
+env/
+.env
+
+# Environment variables - IMPORTANT, never commit API keys
+.env
+*.env
+
+# Database - don't commit recordings data
+*.db
+*.sqlite
+*.sqlite3
+
+# Recordings and uploads - large files
+backend/recordings/
+backend/uploads/
+*.mp4
+*.avi
+*.mov
+*.wav
+
+# YOLO model weights - large files, auto downloaded
+*.pt
+*.onnx
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+
+# Node modules if you have a JS frontend
+node_modules/
+dist/
+build/
+
+# Logs
+*.log
+logs/
