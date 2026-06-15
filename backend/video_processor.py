@@ -32,8 +32,8 @@ class _PersonTrack:
     cx: float   # normalised centroid x (0–1)
     cy: float   # normalised centroid y (0–1)
     confidence: float = 0.0
-    announced: bool = False        # person_detected already emitted
-    loitering_emitted: bool = False  # loitering_detected already emitted
+    announced: bool = False             # person_detected already emitted
+    last_loitering_at: Optional[float] = None  # wall-clock time of last loitering_detected
 
 
 class VideoProcessor:
@@ -341,8 +341,11 @@ class StreamProcessor:
                     metadata=base_meta,
                 ))
 
-            elif not track.loitering_emitted and (now - track.first_seen) >= LOITERING_SECONDS:
-                track.loitering_emitted = True
+            elif (now - track.first_seen) >= LOITERING_SECONDS and (
+                track.last_loitering_at is None
+                or (now - track.last_loitering_at) >= LOITERING_SECONDS
+            ):
+                track.last_loitering_at = now
                 tracking_events.append(DetectionEvent(
                     source='behavior',
                     type='loitering_detected',
