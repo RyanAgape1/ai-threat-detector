@@ -14,8 +14,9 @@ _device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # COCO class IDs relevant to security
 _PERSON  = 0
-_WEAPONS = {43: 'knife', 76: 'scissors'}
-_BAGS    = {24: 'backpack', 26: 'handbag', 28: 'suitcase'}
+_WEAPONS  = {43: 'knife', 76: 'scissors'}
+_BAGS     = {24: 'backpack', 26: 'handbag', 28: 'suitcase'}
+_VEHICLES = {2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck'}
 
 
 def load_model():
@@ -59,7 +60,14 @@ def detect(
             x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
             cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
 
-            if cls in _WEAPONS:
+            if cls in _VEHICLES and conf >= 0.40:
+                bbox = {'x': x1, 'y': y1, 'w': x2 - x1, 'h': y2 - y1}
+                base = {'frame_id': frame_num, 'video_time_seconds': video_time, 'bounding_box': bbox}
+                events.append(DetectionEvent(
+                    source='cv', type='vehicle_detected', confidence=conf,
+                    metadata={**base, 'object_class': _VEHICLES[cls]},
+                ))
+            elif cls in _WEAPONS:
                 bbox = {'x': x1, 'y': y1, 'w': x2 - x1, 'h': y2 - y1}
                 base = {'frame_id': frame_num, 'video_time_seconds': video_time, 'bounding_box': bbox}
                 events.append(DetectionEvent(
