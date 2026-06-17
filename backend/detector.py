@@ -4,11 +4,13 @@ Replaces the hand-crafted OpenCV heuristics with real object detection.
 """
 import cv2
 import numpy as np
+import torch
 from typing import List, Optional
 
 from models import DetectionEvent
 
 _model = None
+_device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # COCO class IDs relevant to security
 _PERSON  = 0
@@ -45,7 +47,7 @@ def detect(
     # ── YOLO object detection ───────────────────────────────────────────────
     try:
         model = load_model()
-        results = model(frame, verbose=False, conf=0.30)[0]
+        results = model(frame, verbose=False, conf=0.30, device=_device)[0]
 
         # First pass: collect persons and bags separately
         person_boxes: List[tuple] = []  # (cx, cy, x1, y1, x2, y2, conf)
