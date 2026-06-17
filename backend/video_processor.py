@@ -12,6 +12,8 @@ import numpy as np
 
 import audio_analyzer
 import detector
+import reid
+from global_person_registry import GlobalPersonRegistry
 from models import DetectionEvent
 
 
@@ -32,8 +34,10 @@ class _PersonTrack:
     cx: float   # normalised centroid x (0–1)
     cy: float   # normalised centroid y (0–1)
     confidence: float = 0.0
+    bbox: Optional[dict] = None                # last known pixel bounding box for annotation
     announced: bool = False             # person_detected already emitted
     last_loitering_at: Optional[float] = None  # wall-clock time of last loitering_detected
+    global_person_id: Optional[str] = None     # assigned by GlobalPersonRegistry
 
 
 class VideoProcessor:
@@ -174,10 +178,17 @@ class StreamProcessor:
 
     MIN_FRAMES_TO_SAVE = 5  # don't save recordings shorter than ~2.5 s
 
-    def __init__(self, recordings_dir: Optional[str] = None):
+    def __init__(
+        self,
+        recordings_dir: Optional[str] = None,
+        camera_id: Optional[str] = None,
+        registry: Optional[GlobalPersonRegistry] = None,
+    ):
         self._prev_gray: Optional[np.ndarray] = None
         self._frame_count: int = 0
         self._recordings_dir = recordings_dir
+        self._camera_id = camera_id
+        self._registry = registry
         # Recording state (reset between sessions)
         self._rec_id: Optional[str] = None
         self._rec_path: Optional[str] = None
@@ -230,7 +241,7 @@ class StreamProcessor:
         self._frame_count += 1
 
         h, w = frame.shape[:2]
-        events = self._apply_person_tracking(raw_events, w, h)
+        events = self._apply_person_tracking(raw_events, frame, w, h)
 
         # First frame of a new camera session: guarantee an activity opens even
         # if YOLO sees nothing yet (prev_gray is None, motion detection is skipped).
@@ -242,11 +253,12 @@ class StreamProcessor:
                 metadata={'frame_id': 0},
             )]
 
-        frame_b64 = _encode_frame(frame) if events else None
+        annotated = self._annotate_frame(frame)
+        frame_b64 = _encode_frame(annotated) if events else None
         return events, frame_b64
 
     def _apply_person_tracking(
-        self, raw_events: list, frame_w: int, frame_h: int
+        self, raw_events: list, frame: np.ndarray, frame_w: int, frame_h: int
     ) -> list:
         """Replace raw person_detected events with tracked ones.
 
@@ -307,11 +319,32 @@ class StreamProcessor:
                     t.cx = cx
                     t.cy = cy
                     t.confidence = _ev.confidence
+                    t.bbox = _ev.metadata.get('bounding_box')
 
         # Create tracks for unmatched detections; record which det spawned each track
         new_track_to_det: Dict[int, int] = {}
+        # track_id -> camera the person moved FROM (None if first appearance)
+        moved_from_map: Dict[int, Optional[str]] = {}
         for det_idx, (cx, cy, _ev) in enumerate(detections):
             if det_idx not in matched_det_indices:
+                # Re-ID: extract embedding and look up global identity
+                global_pid: Optional[str] = None
+                moved_from: Optional[str] = None
+                if self._registry is not None and self._camera_id is not None:
+                    try:
+                        bb = _ev.metadata.get('bounding_box', {})
+                        # Only run Re-ID when the crop is large enough to be meaningful.
+                        # Partial views (arm, shoulder, edge of frame) produce noisy
+                        # embeddings that create spurious identities.
+                        bb_area = bb.get('w', 0) * bb.get('h', 0)
+                        frame_area = frame_w * frame_h
+                        if bb_area >= frame_area * 0.04 and _ev.confidence >= 0.55:
+                            emb = reid.extract_embedding(frame, bb)
+                            if emb is not None:
+                                global_pid, moved_from = self._registry.identify(emb, self._camera_id)
+                    except Exception as exc:
+                        print(f'[reid] error during embedding/identify: {exc}')
+
                 tid = self._next_track_id
                 self._next_track_id += 1
                 self._person_tracks[tid] = _PersonTrack(
@@ -321,12 +354,21 @@ class StreamProcessor:
                     cx=cx,
                     cy=cy,
                     confidence=_ev.confidence,
+                    bbox=_ev.metadata.get('bounding_box'),
+                    global_person_id=global_pid,
                 )
                 new_track_to_det[tid] = det_idx
+                moved_from_map[tid] = moved_from
 
         # Emit events based on track state
         tracking_events: List[DetectionEvent] = []
         for tid, track in self._person_tracks.items():
+            cam_path = (
+                self._registry.camera_path_for(track.global_person_id)
+                if self._registry and track.global_person_id
+                else ([self._camera_id] if self._camera_id else [])
+            )
+
             if not track.announced:
                 track.announced = True
                 det_idx = track_to_det.get(tid, new_track_to_det.get(tid))
@@ -334,6 +376,9 @@ class StreamProcessor:
                     base_meta = {**detections[det_idx][2].metadata, 'track_id': tid}
                 else:
                     base_meta = {'track_id': tid}
+                if track.global_person_id is not None:
+                    base_meta['global_person_id'] = track.global_person_id
+                base_meta['camera_path'] = cam_path
                 tracking_events.append(DetectionEvent(
                     source='cv',
                     type='person_detected',
@@ -341,22 +386,59 @@ class StreamProcessor:
                     metadata=base_meta,
                 ))
 
+                # If the person moved from another camera, emit a movement event
+                moved_from = moved_from_map.get(tid)
+                if moved_from is not None and track.global_person_id is not None:
+                    tracking_events.append(DetectionEvent(
+                        source='behavior',
+                        type='person_moved_camera',
+                        confidence=1.0,
+                        metadata={
+                            'global_person_id': track.global_person_id,
+                            'from_camera': moved_from,
+                            'to_camera': self._camera_id,
+                            'camera_path': cam_path,
+                        },
+                    ))
+
             elif (now - track.first_seen) >= LOITERING_SECONDS and (
                 track.last_loitering_at is None
                 or (now - track.last_loitering_at) >= LOITERING_SECONDS
             ):
                 track.last_loitering_at = now
+                meta: dict = {
+                    'track_id': tid,
+                    'duration_seconds': round(now - track.first_seen, 1),
+                    'camera_path': cam_path,
+                }
+                if track.global_person_id:
+                    meta['global_person_id'] = track.global_person_id
                 tracking_events.append(DetectionEvent(
                     source='behavior',
                     type='loitering_detected',
                     confidence=track.confidence,
-                    metadata={
-                        'track_id': tid,
-                        'duration_seconds': round(now - track.first_seen, 1),
-                    },
+                    metadata=meta,
                 ))
 
         return other_events + tracking_events
+
+    def _annotate_frame(self, frame: np.ndarray) -> np.ndarray:
+        """Draw bounding boxes and person ID labels for all active tracks."""
+        if not self._person_tracks:
+            return frame
+        annotated = frame.copy()
+        for track in self._person_tracks.values():
+            bb = track.bbox
+            if bb is None:
+                continue
+            x, y, w, h = int(bb['x']), int(bb['y']), int(bb['w']), int(bb['h'])
+            label = track.global_person_id[:8] if track.global_person_id else f'#{track.track_id}'
+            color = (0, 255, 0)
+            cv2.rectangle(annotated, (x, y), (x + w, y + h), color, 2)
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+            cv2.rectangle(annotated, (x, y - th - 6), (x + tw + 6, y), color, -1)
+            cv2.putText(annotated, label, (x + 3, y - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
+        return annotated
 
     def stop_recording(self) -> Optional[dict]:
         """Finalize the current recording and return its metadata, or None if nothing

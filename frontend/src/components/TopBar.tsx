@@ -27,6 +27,7 @@ export const TopBar: React.FC<TopBarProps> = ({
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [starting, setStarting] = useState(false);
+  const [showPicker, setShowPicker] = useState(false);
 
   // Cameras not currently in an active session
   const activeDeviceIds = new Set(sessions.map((s) => s.deviceId));
@@ -43,12 +44,16 @@ export const TopBar: React.FC<TopBarProps> = ({
     }
   };
 
-  const handleStartCamera = async () => {
+  const handleStartCamera = async (deviceId?: string) => {
     if (starting) return;
     setStarting(true);
+    setShowPicker(false);
     try {
-      // Use the first known inactive device ID, or '' to let the browser pick
-      await onStartCamera(inactiveCameras[0]?.deviceId ?? '');
+      // No cameras enumerated yet → pass '' to trigger browser permission prompt.
+      // Exactly one inactive camera → start it directly (no ambiguity).
+      // deviceId explicitly supplied (user picked from dropdown) → use it.
+      const id = deviceId ?? (inactiveCameras.length === 1 ? inactiveCameras[0].deviceId : '');
+      await onStartCamera(id);
     } finally {
       setStarting(false);
     }
@@ -140,18 +145,42 @@ export const TopBar: React.FC<TopBarProps> = ({
             </button>
           ))}
 
-          {/* Start Camera button — always visible; disabled only when all cameras already active */}
-          <button
-            onClick={handleStartCamera}
-            disabled={starting || allCamerasActive}
-            className="font-mono text-xs font-semibold tracking-widest uppercase px-4 py-1.5 rounded
-              border transition-all duration-200 select-none
-              bg-violet-900/30 border-violet-700/50 text-violet-300
-              hover:bg-violet-900/50 hover:border-violet-600
-              disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {starting ? '...' : '📷 Start Camera'}
-          </button>
+          {/* Start Camera button — opens picker when multiple inactive cameras exist */}
+          <div className="relative">
+            <button
+              onClick={() => {
+                if (inactiveCameras.length > 1) {
+                  setShowPicker((v) => !v);
+                } else {
+                  handleStartCamera();
+                }
+              }}
+              disabled={starting || allCamerasActive}
+              className="font-mono text-xs font-semibold tracking-widest uppercase px-4 py-1.5 rounded
+                border transition-all duration-200 select-none
+                bg-violet-900/30 border-violet-700/50 text-violet-300
+                hover:bg-violet-900/50 hover:border-violet-600
+                disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {starting ? '...' : '📷 Start Camera'}
+            </button>
+
+            {/* Inline camera picker dropdown */}
+            {showPicker && inactiveCameras.length > 1 && (
+              <div className="absolute right-0 top-full mt-1 z-50 bg-dash-panel border border-dash-border rounded shadow-lg min-w-[160px]">
+                {inactiveCameras.map((cam) => (
+                  <button
+                    key={cam.deviceId}
+                    onClick={() => handleStartCamera(cam.deviceId)}
+                    className="w-full text-left px-3 py-2 font-mono text-xs text-gray-300
+                      hover:bg-violet-900/30 hover:text-violet-300 transition-colors truncate"
+                  >
+                    {cam.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Upload video */}

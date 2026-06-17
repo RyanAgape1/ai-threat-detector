@@ -49,3 +49,27 @@ build/
 # Logs
 *.log
 logs/
+
+# PyTorch model files (ReID model weights)
+*.pth
+*.pkl
+
+# Audio/video formats you might generate
+*.webm
+*.mkv
+
+# Temp files from video processing
+*.tmp
+tmp/
+
+# Python type checking
+.mypy_cache/
+
+# Test coverage
+.coverage
+htmlcov/
+
+# torchreid downloaded model weights cache
+~/.cache/torch/
+~/.cache/torchreid/
+*.pth

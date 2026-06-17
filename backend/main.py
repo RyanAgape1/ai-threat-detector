@@ -18,6 +18,7 @@ import audio_analyzer
 import detector
 import recordings_db
 from evidence_bus import EvidenceBus
+from global_person_registry import GlobalPersonRegistry
 from models import DetectionEvent
 from video_processor import VideoProcessor, StreamProcessor
 
@@ -33,6 +34,9 @@ _ws_lock = asyncio.Lock()
 # Per-session state for live camera streams
 stream_processors: Dict[str, "StreamProcessor"] = {}
 _frame_locks: Dict[str, asyncio.Lock] = {}
+
+# Cross-camera person Re-ID registry (shared across all camera sessions)
+person_registry = GlobalPersonRegistry()
 
 
 async def broadcast(message: dict) -> None:
@@ -234,7 +238,11 @@ async def upload_status(job_id: str) -> dict:
 async def stream_start(camera_label: str = Form("")) -> dict:
     """Create a new camera session. Returns session_id for subsequent frame/audio/reset calls."""
     session_id = str(uuid4())
-    stream_processors[session_id] = StreamProcessor(recordings_dir=str(RECORDINGS_DIR))
+    stream_processors[session_id] = StreamProcessor(
+        recordings_dir=str(RECORDINGS_DIR),
+        camera_id=session_id,
+        registry=person_registry,
+    )
     _frame_locks[session_id] = asyncio.Lock()
     return {"session_id": session_id}
 
