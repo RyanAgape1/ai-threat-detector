@@ -41,16 +41,32 @@ def _is_important(event: dict) -> bool:
 
 
 def _enrich_with_recording(events: list[dict], recordings: list[dict]) -> list[dict]:
-    """Attach recording_id to events whose timestamp falls within a known recording."""
+    """Attach recording_id to events whose timestamp falls within a known recording.
+
+    Primary match: session_id + time range.
+    Fallback: time range only, so events from older/mismatched sessions still get linked.
+    """
     enriched = []
     for ev in events:
         ev = dict(ev)
         camera_id = ev['metadata'].get('camera_id')
         ts = ev['timestamp']
+
+        matched = False
+        # Exact match first
         for rec in recordings:
             if rec.get('session_id') == camera_id and rec['started_at'] - 5 <= ts <= rec['ended_at'] + 5:
                 ev['recording_id'] = rec['id']
+                matched = True
                 break
+
+        # Fallback: any recording whose time window covers this event
+        if not matched:
+            for rec in recordings:
+                if rec['started_at'] - 5 <= ts <= rec['ended_at'] + 5:
+                    ev['recording_id'] = rec['id']
+                    break
+
         enriched.append(ev)
     return enriched
 

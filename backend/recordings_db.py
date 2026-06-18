@@ -130,17 +130,56 @@ def get_recording(id: str) -> Optional[dict]:
 
 
 def delete_recording_row(id: str) -> Optional[str]:
-    """Remove from DB and return the filepath, or None if not found."""
+    """Remove recording and all activities/events from that session. Returns filepath or None."""
     with _connect() as conn:
         row = conn.execute(
-            "SELECT filepath FROM recordings WHERE id = ?", (id,)
+            "SELECT filepath, session_id, started_at, ended_at FROM recordings WHERE id = ?", (id,)
         ).fetchone()
         if not row:
             return None
         filepath = row["filepath"]
+        session_id = row["session_id"]
+
+        if session_id:
+            _delete_session_activities(conn, session_id)
+
         conn.execute("DELETE FROM recordings WHERE id = ?", (id,))
         conn.commit()
         return filepath
+
+
+def _delete_session_activities(conn: sqlite3.Connection, session_id: str) -> None:
+    """Delete all activities (and their events/explanations) for a given camera session."""
+    act_rows = conn.execute(
+        "SELECT id FROM activities WHERE camera_id = ?", (session_id,)
+    ).fetchall()
+    for act_row in act_rows:
+        aid = act_row["id"]
+        conn.execute("DELETE FROM detection_events WHERE activity_id = ?", (aid,))
+        conn.execute("DELETE FROM explanations WHERE activity_id = ?", (aid,))
+    conn.execute("DELETE FROM activities WHERE camera_id = ?", (session_id,))
+
+
+def purge_orphaned_activities() -> int:
+    """Delete activities whose camera_id has no matching recording. Returns count deleted."""
+    with _connect() as conn:
+        session_ids = {
+            row["session_id"]
+            for row in conn.execute("SELECT session_id FROM recordings WHERE session_id IS NOT NULL").fetchall()
+        }
+        # Activities with a camera_id not in any recording are orphaned
+        act_rows = conn.execute(
+            "SELECT id, camera_id FROM activities WHERE camera_id IS NOT NULL"
+        ).fetchall()
+        orphaned = [row["id"] for row in act_rows if row["camera_id"] not in session_ids]
+        for aid in orphaned:
+            conn.execute("DELETE FROM detection_events WHERE activity_id = ?", (aid,))
+            conn.execute("DELETE FROM explanations WHERE activity_id = ?", (aid,))
+        if orphaned:
+            placeholders = ",".join("?" * len(orphaned))
+            conn.execute(f"DELETE FROM activities WHERE id IN ({placeholders})", orphaned)
+        conn.commit()
+        return len(orphaned)
 
 
 # ---------------------------------------------------------------------------

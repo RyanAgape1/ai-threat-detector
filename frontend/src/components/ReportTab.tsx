@@ -187,16 +187,17 @@ function ReportDetail({
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-5 py-4 space-y-6">
-        {/* Narrative */}
+      {/* Summary + video player — pinned, scrolls only within itself if narrative is long */}
+      <div className="shrink-0 border-b border-dash-border px-5 py-4 max-h-[42%] overflow-y-auto space-y-4">
         <section>
           <h3 className="font-mono text-xs text-gray-500 uppercase tracking-widest mb-3">Summary</h3>
           <p className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap">{report.narrative}</p>
         </section>
-
-        {/* Video player */}
         {playback && <VideoPlayer playback={playback} onClose={() => setPlayback(null)} />}
+      </div>
 
+      {/* Events — independently scrollable */}
+      <div className="flex-1 overflow-y-auto px-5 py-4 space-y-6">
         {/* Important events */}
         {report.important_events.length > 0 && (
           <section>

@@ -74,6 +74,9 @@ async def lifespan(app: FastAPI):
 
     RECORDINGS_DIR.mkdir(exist_ok=True)
     recordings_db.init_db()
+    purged = recordings_db.purge_orphaned_activities()
+    if purged:
+        print(f"[startup] purged {purged} orphaned activities with no matching recording")
 
     bus = EvidenceBus(broadcast_fn=broadcast)
     bus.start()
