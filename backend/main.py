@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel as PydanticBaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
@@ -17,6 +18,7 @@ load_dotenv()
 import audio_analyzer
 import detector
 import recordings_db
+import report_generator
 from evidence_bus import EvidenceBus
 from global_person_registry import GlobalPersonRegistry
 from models import DetectionEvent
@@ -344,6 +346,45 @@ async def delete_recording(recording_id: str) -> dict:
         Path(filepath).unlink(missing_ok=True)
     except OSError as e:
         print(f"[recording] failed to delete file {filepath}: {e}")
+    return {"status": "deleted"}
+
+
+# ---------------------------------------------------------------------------
+# Reports
+# ---------------------------------------------------------------------------
+
+
+class GenerateReportRequest(PydanticBaseModel):
+    time_from: float
+    time_to: float
+
+
+@app.post("/reports/generate")
+async def generate_report_endpoint(req: GenerateReportRequest) -> dict:
+    """Generate an activity report for the given UTC epoch time range."""
+    try:
+        return await report_generator.generate_report(req.time_from, req.time_to)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/reports")
+async def list_reports_endpoint() -> list[dict]:
+    return recordings_db.list_reports()
+
+
+@app.get("/reports/{report_id}")
+async def get_report_endpoint(report_id: str) -> dict:
+    report = recordings_db.get_report(report_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Report not found")
+    return report
+
+
+@app.delete("/reports/{report_id}")
+async def delete_report_endpoint(report_id: str) -> dict:
+    if not recordings_db.delete_report(report_id):
+        raise HTTPException(status_code=404, detail="Report not found")
     return {"status": "deleted"}
 
 

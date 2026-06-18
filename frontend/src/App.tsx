@@ -7,6 +7,7 @@ import { TopBar } from './components/TopBar';
 import { IncidentFeed } from './components/IncidentFeed';
 import { ReasoningPanel } from './components/ReasoningPanel';
 import { RecordingsModal } from './components/RecordingsModal';
+import { ReportTab } from './components/ReportTab';
 
 const App: React.FC = () => {
   const {
@@ -30,6 +31,7 @@ const App: React.FC = () => {
   const { resolutions, resolve } = useResolutions();
   const { recordings, loading: recordingsLoading, refresh: refreshRecordings, deleteRecording, getVideoUrl, fetchActivities } = useRecordings();
   const [recordingsOpen, setRecordingsOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<'log' | 'report'>('log');
 
   // Auto-refresh recordings shortly after camera stops so the new recording is available
   useEffect(() => {
@@ -69,25 +71,48 @@ const App: React.FC = () => {
         onClearAll={clearAll}
         onOpenRecordings={() => setRecordingsOpen(true)}
       />
+      {/* Tab bar */}
+      <div className="flex shrink-0 border-b border-dash-border bg-dash-panel px-4">
+        {(['log', 'report'] as const).map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={`font-mono text-xs font-semibold tracking-widest uppercase px-4 py-2.5
+              border-b-2 transition-colors duration-150 select-none
+              ${activeTab === tab
+                ? 'border-blue-500 text-blue-300'
+                : 'border-transparent text-gray-500 hover:text-gray-300'}`}
+          >
+            {tab === 'log' ? 'Activity Log' : 'Activity Report'}
+          </button>
+        ))}
+      </div>
+
       <div className="flex flex-1 overflow-hidden">
-        <IncidentFeed
-          activities={activities}
-          selectedId={selectedId}
-          onSelect={setSelectedId}
-          resolutions={resolutions}
-          cameraFilter={cameraFilter}
-        />
-        <ReasoningPanel
-          activity={selectedActivity}
-          videoUrl={cameraActive ? null : effectiveVideoUrl}
-          cameraSessions={sessions}
-          snapshots={snapshots}
-          resolution={selectedActivity ? (resolutions[selectedActivity.id] ?? null) : null}
-          onResolve={(decision) => selectedActivity && resolve(selectedActivity.id, decision)}
-          recordingStartedAt={recordingStartedAt}
-          cameraFilter={cameraFilter}
-          onCameraFilterChange={setCameraFilter}
-        />
+        {activeTab === 'log' ? (
+          <>
+            <IncidentFeed
+              activities={activities}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              resolutions={resolutions}
+              cameraFilter={cameraFilter}
+            />
+            <ReasoningPanel
+              activity={selectedActivity}
+              videoUrl={cameraActive ? null : effectiveVideoUrl}
+              cameraSessions={sessions}
+              snapshots={snapshots}
+              resolution={selectedActivity ? (resolutions[selectedActivity.id] ?? null) : null}
+              onResolve={(decision) => selectedActivity && resolve(selectedActivity.id, decision)}
+              recordingStartedAt={recordingStartedAt}
+              cameraFilter={cameraFilter}
+              onCameraFilterChange={setCameraFilter}
+            />
+          </>
+        ) : (
+          <ReportTab />
+        )}
       </div>
 
       <RecordingsModal

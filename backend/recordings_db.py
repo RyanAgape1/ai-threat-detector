@@ -68,9 +68,21 @@ def init_db() -> None:
                 explanation_json TEXT NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS reports (
+                id TEXT PRIMARY KEY,
+                generated_at REAL NOT NULL,
+                time_from REAL NOT NULL,
+                time_to REAL NOT NULL,
+                narrative TEXT NOT NULL,
+                important_events_json TEXT NOT NULL DEFAULT '[]',
+                person_journeys_json TEXT NOT NULL DEFAULT '[]'
+            )
+        """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_activity ON detection_events(activity_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_explanations_activity ON explanations(activity_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_activities_time ON activities(started_at, closed_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_reports_time ON reports(generated_at)")
         conn.commit()
 
 
@@ -238,3 +250,92 @@ def get_activities_for_recording(recording_id: str) -> list[dict]:
             result.append(act)
 
         return result
+
+
+# ---------------------------------------------------------------------------
+# Activity range query (used by report generator)
+# ---------------------------------------------------------------------------
+
+def get_activities_in_range(time_from: float, time_to: float) -> list[dict]:
+    """Return all persisted activities (with events) that overlap [time_from, time_to]."""
+    with _connect() as conn:
+        act_rows = conn.execute(
+            """SELECT * FROM activities
+               WHERE started_at <= ? AND (closed_at IS NULL OR closed_at >= ?)
+               ORDER BY started_at ASC""",
+            (time_to, time_from),
+        ).fetchall()
+
+        result = []
+        for act_row in act_rows:
+            act = dict(act_row)
+            act["summary"] = json.loads(act.pop("summary_json")) if act.get("summary_json") else None
+
+            event_rows = conn.execute(
+                "SELECT * FROM detection_events WHERE activity_id = ? ORDER BY timestamp ASC",
+                (act["id"],),
+            ).fetchall()
+            act["events"] = []
+            for e in event_rows:
+                ed = dict(e)
+                ed["metadata"] = json.loads(ed.pop("metadata_json"))
+                act["events"].append(ed)
+
+            result.append(act)
+        return result
+
+
+# ---------------------------------------------------------------------------
+# Reports
+# ---------------------------------------------------------------------------
+
+def save_report(
+    id: str,
+    generated_at: float,
+    time_from: float,
+    time_to: float,
+    narrative: str,
+    important_events: list,
+    person_journeys: list,
+) -> None:
+    with _connect() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO reports
+               (id, generated_at, time_from, time_to, narrative,
+                important_events_json, person_journeys_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                id, generated_at, time_from, time_to, narrative,
+                json.dumps(important_events),
+                json.dumps(person_journeys),
+            ),
+        )
+        conn.commit()
+
+
+def list_reports() -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT id, generated_at, time_from, time_to,
+                      substr(narrative, 1, 200) AS narrative_preview
+               FROM reports ORDER BY generated_at DESC"""
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def get_report(id: str) -> Optional[dict]:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM reports WHERE id = ?", (id,)).fetchone()
+        if not row:
+            return None
+        r = dict(row)
+        r["important_events"] = json.loads(r.pop("important_events_json"))
+        r["person_journeys"] = json.loads(r.pop("person_journeys_json"))
+        return r
+
+
+def delete_report(id: str) -> bool:
+    with _connect() as conn:
+        result = conn.execute("DELETE FROM reports WHERE id = ?", (id,))
+        conn.commit()
+        return result.rowcount > 0

@@ -38,6 +38,41 @@ export interface UploadProgress {
   error?: string;
 }
 
+export interface ReportEvent {
+  id: string;
+  activity_id: string;
+  timestamp: number;
+  source: string;
+  type: string;
+  confidence: number;
+  metadata: Record<string, unknown>;
+  recording_id?: string;
+}
+
+export interface PersonJourney {
+  global_person_id: string;
+  camera_path: string[];
+  events: ReportEvent[];
+}
+
+export interface Report {
+  id: string;
+  generated_at: number;
+  time_from: number;
+  time_to: number;
+  narrative: string;
+  important_events: ReportEvent[];
+  person_journeys: PersonJourney[];
+}
+
+export interface ReportSummary {
+  id: string;
+  generated_at: number;
+  time_from: number;
+  time_to: number;
+  narrative_preview: string;
+}
+
 export type WSMessage =
   | { type: 'all_activities'; activities: Activity[] }
   | { type: 'activity_opened'; activity: Activity }
