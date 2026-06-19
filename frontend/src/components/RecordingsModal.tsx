@@ -417,7 +417,10 @@ const EventRow: React.FC<{
   const handleClick = () => {
     const el = videoRef.current;
     if (!el) return;
-    el.currentTime = Math.max(0, event.timestamp - recordingStartedAt);
+    const videoSecs = typeof event.metadata?.video_time_seconds === 'number'
+      ? event.metadata.video_time_seconds
+      : Math.max(0, event.timestamp - recordingStartedAt);
+    el.currentTime = videoSecs;
     el.pause();
   };
 

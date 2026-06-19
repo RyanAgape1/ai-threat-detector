@@ -283,7 +283,10 @@ async def stream_frame(
     contents = await frame.read()
     loop = asyncio.get_event_loop()
     async with lock:
-        events, frame_b64 = await loop.run_in_executor(None, processor.process_frame_bytes, contents)
+        events, frame_b64, checkpoint_meta = await loop.run_in_executor(None, processor.process_frame_bytes, contents)
+    if checkpoint_meta:
+        recordings_db.save_recording(**checkpoint_meta, session_id=session_id)
+        asyncio.create_task(s3_backup.backup_recording_async(checkpoint_meta["filepath"], checkpoint_meta["filename"]))
     for event in events:
         event.metadata["camera_id"] = session_id
         await bus.ingest(event, frame_b64)

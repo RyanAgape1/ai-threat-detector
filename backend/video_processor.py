@@ -25,7 +25,8 @@ LOITERING_SECONDS = 30.0
 TRACK_TIMEOUT_SECONDS = 5.0   # drop a track if unseen for this long
 TRACK_MAX_DISTANCE = 0.35     # max normalised centroid distance to match (0–1 diagonal)
 REID_MIN_FRAMES = 3           # consecutive frames a track must exist before Re-ID runs
-REID_AREA_GATE = 0.08         # bbox must be >= 8% of frame area for Re-ID
+REID_AREA_GATE = 0.04         # bbox must be >= 4% of frame area for Re-ID
+CHECKPOINT_INTERVAL = 1800    # seconds between mid-session recording checkpoints (30 min)
 
 
 @dataclass
@@ -198,17 +199,24 @@ class StreamProcessor:
         self._rec_path: Optional[str] = None
         self._rec_start: Optional[float] = None
         self._rec_frames: int = 0
+        self._rec_frame_offset: int = 0  # _frame_count value at start of current segment
         self._writer: Optional[cv2.VideoWriter] = None
         # Person tracking state
         self._person_tracks: Dict[int, _PersonTrack] = {}
         self._next_track_id: int = 0
 
-    def process_frame_bytes(self, jpeg_bytes: bytes) -> Tuple[list, Optional[str]]:
-        """Returns (events, frame_b64). frame_b64 is set only when events were detected."""
+    def process_frame_bytes(self, jpeg_bytes: bytes) -> Tuple[list, Optional[str], Optional[dict]]:
+        """Returns (events, frame_b64, checkpoint_meta).
+        checkpoint_meta is non-None when a recording segment was finalized mid-session."""
         nparr = np.frombuffer(jpeg_bytes, np.uint8)
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if frame is None:
-            return [], None
+            return [], None, None
+
+        # Mid-session checkpoint: finalize and rotate the recording file periodically
+        checkpoint_meta: Optional[dict] = None
+        if self._rec_start is not None and time.time() - self._rec_start >= CHECKPOINT_INTERVAL:
+            checkpoint_meta = self._do_checkpoint()
 
         # Record this frame — isolated in try/except so any writer failure
         # never prevents detection from running.
@@ -219,6 +227,7 @@ class StreamProcessor:
                 self._rec_path = os.path.join(self._recordings_dir, filename)
                 self._rec_start = time.time()
                 self._rec_frames = 0
+                self._rec_frame_offset = self._frame_count
 
             if self._rec_path is not None and self._writer is None:
                 h, w = frame.shape[:2]
@@ -240,7 +249,7 @@ class StreamProcessor:
             print(f"[recording] write error: {exc}")
 
         is_first_frame = (self._frame_count == 0)
-        raw_events = detector.detect(frame, self._prev_gray, self._frame_count, fps=2.0)
+        raw_events = detector.detect(frame, self._prev_gray, self._frame_count - self._rec_frame_offset, fps=2.0)
         self._prev_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         self._frame_count += 1
 
@@ -259,7 +268,7 @@ class StreamProcessor:
 
         annotated = self._annotate_frame(frame)
         frame_b64 = _encode_frame(annotated) if events else None
-        return events, frame_b64
+        return events, frame_b64, checkpoint_meta
 
     def _apply_person_tracking(
         self, raw_events: list, frame: np.ndarray, frame_w: int, frame_h: int
@@ -442,6 +451,34 @@ class StreamProcessor:
             cv2.putText(annotated, label, (x + 3, y - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
         return annotated
 
+    def _do_checkpoint(self) -> Optional[dict]:
+        """Close the current recording segment, save metadata, reset state for a new segment."""
+        if self._writer is not None:
+            self._writer.release()
+            self._writer = None
+
+        meta = None
+        if self._rec_path is not None and self._rec_frames >= self.MIN_FRAMES_TO_SAVE:
+            ended_at = time.time()
+            meta = {
+                "id": self._rec_id,
+                "filepath": self._rec_path,
+                "filename": os.path.basename(self._rec_path),
+                "started_at": self._rec_start,
+                "ended_at": ended_at,
+                "duration_seconds": ended_at - (self._rec_start or ended_at),
+                "frame_count": self._rec_frames,
+                "filesize_bytes": os.path.getsize(self._rec_path) if os.path.exists(self._rec_path) else 0,
+            }
+            print(f"[recording] checkpoint saved: {os.path.basename(self._rec_path)} ({self._rec_frames} frames)")
+        elif self._rec_path and os.path.exists(self._rec_path):
+            os.unlink(self._rec_path)
+
+        # Reset so the next frame opens a fresh recording segment
+        self._rec_id = self._rec_path = self._rec_start = None
+        self._rec_frames = 0
+        return meta
+
     def stop_recording(self) -> Optional[dict]:
         """Finalize the current recording and return its metadata, or None if nothing
         worth saving (too short or no recording was active)."""
@@ -475,5 +512,6 @@ class StreamProcessor:
     def reset(self):
         self._prev_gray = None
         self._frame_count = 0
+        self._rec_frame_offset = 0
         self._person_tracks = {}
         self._next_track_id = 0
