@@ -24,6 +24,8 @@ from models import DetectionEvent
 LOITERING_SECONDS = 30.0
 TRACK_TIMEOUT_SECONDS = 5.0   # drop a track if unseen for this long
 TRACK_MAX_DISTANCE = 0.35     # max normalised centroid distance to match (0–1 diagonal)
+REID_MIN_FRAMES = 3           # consecutive frames a track must exist before Re-ID runs
+REID_AREA_GATE = 0.08         # bbox must be >= 8% of frame area for Re-ID
 
 
 @dataclass
@@ -38,6 +40,8 @@ class _PersonTrack:
     announced: bool = False             # person_detected already emitted
     last_loitering_at: Optional[float] = None  # wall-clock time of last loitering_detected
     global_person_id: Optional[str] = None     # assigned by GlobalPersonRegistry
+    frames_seen: int = 0                # consecutive frames this track has been matched
+    reid_done: bool = False             # Re-ID has been attempted on a stable crop
 
 
 class VideoProcessor:
@@ -320,31 +324,12 @@ class StreamProcessor:
                     t.cy = cy
                     t.confidence = _ev.confidence
                     t.bbox = _ev.metadata.get('bounding_box')
+                    t.frames_seen += 1
 
-        # Create tracks for unmatched detections; record which det spawned each track
+        # Create tracks for unmatched detections (Re-ID is deferred until REID_MIN_FRAMES)
         new_track_to_det: Dict[int, int] = {}
-        # track_id -> camera the person moved FROM (None if first appearance)
-        moved_from_map: Dict[int, Optional[str]] = {}
         for det_idx, (cx, cy, _ev) in enumerate(detections):
             if det_idx not in matched_det_indices:
-                # Re-ID: extract embedding and look up global identity
-                global_pid: Optional[str] = None
-                moved_from: Optional[str] = None
-                if self._registry is not None and self._camera_id is not None:
-                    try:
-                        bb = _ev.metadata.get('bounding_box', {})
-                        # Only run Re-ID when the crop is large enough to be meaningful.
-                        # Partial views (arm, shoulder, edge of frame) produce noisy
-                        # embeddings that create spurious identities.
-                        bb_area = bb.get('w', 0) * bb.get('h', 0)
-                        frame_area = frame_w * frame_h
-                        if bb_area >= frame_area * 0.04 and _ev.confidence >= 0.55:
-                            emb = reid.extract_embedding(frame, bb)
-                            if emb is not None:
-                                global_pid, moved_from = self._registry.identify(emb, self._camera_id)
-                    except Exception as exc:
-                        print(f'[reid] error during embedding/identify: {exc}')
-
                 tid = self._next_track_id
                 self._next_track_id += 1
                 self._person_tracks[tid] = _PersonTrack(
@@ -355,10 +340,42 @@ class StreamProcessor:
                     cy=cy,
                     confidence=_ev.confidence,
                     bbox=_ev.metadata.get('bounding_box'),
-                    global_person_id=global_pid,
+                    frames_seen=1,
                 )
                 new_track_to_det[tid] = det_idx
-                moved_from_map[tid] = moved_from
+
+        # Deferred Re-ID pass: run once a track has been seen for REID_MIN_FRAMES frames
+        reid_events: List[DetectionEvent] = []
+        if self._registry is not None and self._camera_id is not None:
+            for tid, track in self._person_tracks.items():
+                if track.reid_done or track.frames_seen < REID_MIN_FRAMES:
+                    continue
+                try:
+                    bb = track.bbox or {}
+                    bb_area = bb.get('w', 0) * bb.get('h', 0)
+                    frame_area = frame_w * frame_h
+                    if bb_area < frame_area * REID_AREA_GATE or track.confidence < 0.55:
+                        continue  # crop still too small — try again next frame
+                    emb = reid.extract_embedding(frame, bb)
+                    if emb is not None:
+                        global_pid, moved_from = self._registry.identify(emb, self._camera_id)
+                        track.global_person_id = global_pid
+                        track.reid_done = True
+                        if moved_from is not None:
+                            cam_path = self._registry.camera_path_for(global_pid)
+                            reid_events.append(DetectionEvent(
+                                source='behavior',
+                                type='person_moved_camera',
+                                confidence=1.0,
+                                metadata={
+                                    'global_person_id': global_pid,
+                                    'from_camera': moved_from,
+                                    'to_camera': self._camera_id,
+                                    'camera_path': cam_path,
+                                },
+                            ))
+                except Exception as exc:
+                    print(f'[reid] error during embedding/identify: {exc}')
 
         # Emit events based on track state
         tracking_events: List[DetectionEvent] = []
@@ -386,21 +403,6 @@ class StreamProcessor:
                     metadata=base_meta,
                 ))
 
-                # If the person moved from another camera, emit a movement event
-                moved_from = moved_from_map.get(tid)
-                if moved_from is not None and track.global_person_id is not None:
-                    tracking_events.append(DetectionEvent(
-                        source='behavior',
-                        type='person_moved_camera',
-                        confidence=1.0,
-                        metadata={
-                            'global_person_id': track.global_person_id,
-                            'from_camera': moved_from,
-                            'to_camera': self._camera_id,
-                            'camera_path': cam_path,
-                        },
-                    ))
-
             elif (now - track.first_seen) >= LOITERING_SECONDS and (
                 track.last_loitering_at is None
                 or (now - track.last_loitering_at) >= LOITERING_SECONDS
@@ -420,7 +422,7 @@ class StreamProcessor:
                     metadata=meta,
                 ))
 
-        return other_events + tracking_events
+        return other_events + tracking_events + reid_events
 
     def _annotate_frame(self, frame: np.ndarray) -> np.ndarray:
         """Draw bounding boxes and person ID labels for all active tracks."""
