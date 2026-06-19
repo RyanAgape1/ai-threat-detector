@@ -9,3 +9,4 @@ ultralytics>=8.0.0
 torchreid
 gdown
 tensorboard
+boto3>=1.34.0

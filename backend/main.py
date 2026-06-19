@@ -19,6 +19,7 @@ import audio_analyzer
 import detector
 import recordings_db
 import report_generator
+import s3_backup
 from evidence_bus import EvidenceBus
 from global_person_registry import GlobalPersonRegistry
 from models import DetectionEvent
@@ -68,6 +69,15 @@ bus: Optional[EvidenceBus] = None
 video_processor: Optional[VideoProcessor] = None
 
 
+DB_BACKUP_INTERVAL = 3600  # seconds between automatic DB snapshots
+
+
+async def _db_backup_loop() -> None:
+    while True:
+        await asyncio.sleep(DB_BACKUP_INTERVAL)
+        await s3_backup.backup_db_async(recordings_db.DB_PATH)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global bus, video_processor
@@ -84,9 +94,16 @@ async def lifespan(app: FastAPI):
 
     await asyncio.get_event_loop().run_in_executor(None, detector.load_model)
 
+    db_backup_task = asyncio.create_task(_db_backup_loop())
+    if s3_backup.is_configured():
+        print("[s3] S3 backup enabled - DB snapshots every hour, recordings uploaded on save")
+    else:
+        print("[s3] S3 not configured — set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_S3_BUCKET to enable")
+
     print("Backend running on http://localhost:8000")
     yield
 
+    db_backup_task.cancel()
     if bus._cleanup_task:
         bus._cleanup_task.cancel()
     # Finalize any active camera recordings on shutdown
@@ -94,6 +111,7 @@ async def lifespan(app: FastAPI):
         meta = proc.stop_recording()
         if meta:
             recordings_db.save_recording(**meta, session_id=sid)
+            s3_backup.backup_recording(meta["filepath"], meta["filename"])
     stream_processors.clear()
     _frame_locks.clear()
 
@@ -300,6 +318,7 @@ async def stream_reset(session_id: str = Form(...)) -> dict:
         if meta:
             recordings_db.save_recording(**meta, session_id=session_id)
             print(f"[recording] saved {meta['filename']} ({meta['frame_count']} frames, {meta['duration_seconds']:.1f}s)")
+            asyncio.create_task(s3_backup.backup_recording_async(meta["filepath"], meta["filename"]))
     return {"status": "reset"}
 
 
