@@ -7,6 +7,7 @@ import numpy as np
 import torch
 from typing import List, Optional
 
+import environment_config as _env
 from models import DetectionEvent
 
 _model = None
@@ -45,6 +46,15 @@ def detect(
     events: List[DetectionEvent] = []
     video_time = round(frame_num / fps, 2)
 
+    # Load environment config once per frame (in-memory cache, no disk hit)
+    cfg = _env.get_thresholds()
+    disabled = set(_env.get_disabled_events())
+
+    person_conf_gate = cfg.get("person_confidence", 0.45)
+    bag_conf_gate = cfg.get("bag_confidence", 0.50)
+    vehicle_conf_gate = cfg.get("vehicle_confidence", 0.40)
+    crowd_min = int(cfg.get("crowd_min_persons", 2))
+
     # ── YOLO object detection ───────────────────────────────────────────────
     try:
         model = load_model()
@@ -60,50 +70,54 @@ def detect(
             x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
             cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
 
-            if cls in _VEHICLES and conf >= 0.40:
-                bbox = {'x': x1, 'y': y1, 'w': x2 - x1, 'h': y2 - y1}
-                base = {'frame_id': frame_num, 'video_time_seconds': video_time, 'bounding_box': bbox}
-                events.append(DetectionEvent(
-                    source='cv', type='vehicle_detected', confidence=conf,
-                    metadata={**base, 'object_class': _VEHICLES[cls]},
-                ))
+            if cls in _VEHICLES and conf >= vehicle_conf_gate:
+                if 'vehicle_detected' not in disabled:
+                    bbox = {'x': x1, 'y': y1, 'w': x2 - x1, 'h': y2 - y1}
+                    base = {'frame_id': frame_num, 'video_time_seconds': video_time, 'bounding_box': bbox}
+                    events.append(DetectionEvent(
+                        source='cv', type='vehicle_detected', confidence=conf,
+                        metadata={**base, 'object_class': _VEHICLES[cls]},
+                    ))
             elif cls in _WEAPONS:
-                bbox = {'x': x1, 'y': y1, 'w': x2 - x1, 'h': y2 - y1}
-                base = {'frame_id': frame_num, 'video_time_seconds': video_time, 'bounding_box': bbox}
-                events.append(DetectionEvent(
-                    source='cv', type='weapon_detected', confidence=conf,
-                    metadata={**base, 'object_class': _WEAPONS[cls]},
-                ))
-            elif cls == _PERSON and conf >= 0.45:
+                if 'weapon_detected' not in disabled:
+                    bbox = {'x': x1, 'y': y1, 'w': x2 - x1, 'h': y2 - y1}
+                    base = {'frame_id': frame_num, 'video_time_seconds': video_time, 'bounding_box': bbox}
+                    events.append(DetectionEvent(
+                        source='cv', type='weapon_detected', confidence=conf,
+                        metadata={**base, 'object_class': _WEAPONS[cls]},
+                    ))
+            elif cls == _PERSON and conf >= person_conf_gate:
                 person_boxes.append((cx, cy, x1, y1, x2, y2, conf))
-            elif cls in _BAGS and conf >= 0.50:
+            elif cls in _BAGS and conf >= bag_conf_gate:
                 bag_boxes.append((cx, cy, x1, y1, x2, y2, conf, _BAGS[cls]))
 
         # Emit person events
-        for cx, cy, x1, y1, x2, y2, conf in person_boxes:
-            bbox = {'x': x1, 'y': y1, 'w': x2 - x1, 'h': y2 - y1}
-            events.append(DetectionEvent(
-                source='cv', type='person_detected', confidence=conf,
-                metadata={'frame_id': frame_num, 'video_time_seconds': video_time, 'bounding_box': bbox},
-            ))
-
-        # Emit unattended_object only when no person is within 1.5× the bag's diagonal
-        for bcx, bcy, x1, y1, x2, y2, conf, class_name in bag_boxes:
-            bag_diag = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
-            proximity = bag_diag * 1.5
-            person_nearby = any(
-                ((bcx - pcx) ** 2 + (bcy - pcy) ** 2) ** 0.5 < proximity
-                for pcx, pcy, *_ in person_boxes
-            )
-            if not person_nearby:
+        if 'person_detected' not in disabled:
+            for cx, cy, x1, y1, x2, y2, conf in person_boxes:
                 bbox = {'x': x1, 'y': y1, 'w': x2 - x1, 'h': y2 - y1}
-                base = {'frame_id': frame_num, 'video_time_seconds': video_time, 'bounding_box': bbox}
                 events.append(DetectionEvent(
-                    source='cv', type='unattended_object', confidence=conf * 0.8,
-                    metadata={**base, 'object_class': class_name},
+                    source='cv', type='person_detected', confidence=conf,
+                    metadata={'frame_id': frame_num, 'video_time_seconds': video_time, 'bounding_box': bbox},
                 ))
 
-        if len(person_boxes) >= 2:
+        # Emit unattended_object only when no person is within 1.5× the bag's diagonal
+        if 'unattended_object' not in disabled:
+            for bcx, bcy, x1, y1, x2, y2, conf, class_name in bag_boxes:
+                bag_diag = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+                proximity = bag_diag * 1.5
+                person_nearby = any(
+                    ((bcx - pcx) ** 2 + (bcy - pcy) ** 2) ** 0.5 < proximity
+                    for pcx, pcy, *_ in person_boxes
+                )
+                if not person_nearby:
+                    bbox = {'x': x1, 'y': y1, 'w': x2 - x1, 'h': y2 - y1}
+                    base = {'frame_id': frame_num, 'video_time_seconds': video_time, 'bounding_box': bbox}
+                    events.append(DetectionEvent(
+                        source='cv', type='unattended_object', confidence=conf * 0.8,
+                        metadata={**base, 'object_class': class_name},
+                    ))
+
+        if 'crowd_or_confrontation' not in disabled and len(person_boxes) >= crowd_min:
             events.append(DetectionEvent(
                 source='behavior', type='crowd_or_confrontation',
                 confidence=min(0.88, 0.50 + len(person_boxes) * 0.08),
@@ -124,7 +138,10 @@ def detect(
         _, th = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
         motion = float(np.count_nonzero(th)) / th.size
 
-        if motion > 0.25:
+        rapid_thresh = cfg.get("rapid_motion_threshold", 0.25)
+        move_thresh = cfg.get("movement_threshold", 0.10)
+
+        if motion > rapid_thresh and 'rapid_motion' not in disabled:
             events.append(DetectionEvent(
                 source='behavior', type='rapid_motion',
                 confidence=min(0.90, 0.55 + motion * 1.5),
@@ -134,7 +151,7 @@ def detect(
                     'motion_ratio': round(motion, 3),
                 },
             ))
-        elif motion > 0.10:
+        elif motion > move_thresh and 'movement' not in disabled:
             events.append(DetectionEvent(
                 source='behavior', type='movement',
                 confidence=min(0.80, 0.40 + motion * 2),

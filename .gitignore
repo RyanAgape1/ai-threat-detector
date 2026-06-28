@@ -73,3 +73,6 @@ htmlcov/
 ~/.cache/torch/
 ~/.cache/torchreid/
 *.pth
+
+# Environment configuration (contains runtime settings, not source code)
+environment_config.json

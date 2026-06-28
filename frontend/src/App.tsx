@@ -8,6 +8,7 @@ import { IncidentFeed } from './components/IncidentFeed';
 import { ReasoningPanel } from './components/ReasoningPanel';
 import { RecordingsModal } from './components/RecordingsModal';
 import { ReportTab } from './components/ReportTab';
+import { EnvironmentSetup } from './components/EnvironmentSetup';
 
 const App: React.FC = () => {
   const {
@@ -31,7 +32,7 @@ const App: React.FC = () => {
   const { resolutions, resolve } = useResolutions();
   const { recordings, loading: recordingsLoading, refresh: refreshRecordings, deleteRecording, getVideoUrl, fetchActivities } = useRecordings();
   const [recordingsOpen, setRecordingsOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<'log' | 'report'>('log');
+  const [activeTab, setActiveTab] = useState<'log' | 'report' | 'env'>('log');
 
   // Auto-refresh recordings shortly after camera stops so the new recording is available
   useEffect(() => {
@@ -73,17 +74,21 @@ const App: React.FC = () => {
       />
       {/* Tab bar */}
       <div className="flex shrink-0 border-b border-dash-border bg-dash-panel px-4">
-        {(['log', 'report'] as const).map((tab) => (
+        {([
+          { id: 'log', label: 'Activity Log' },
+          { id: 'report', label: 'Activity Report' },
+          { id: 'env', label: 'Environment' },
+        ] as const).map((tab) => (
           <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
             className={`font-mono text-xs font-semibold tracking-widest uppercase px-4 py-2.5
               border-b-2 transition-colors duration-150 select-none
-              ${activeTab === tab
+              ${activeTab === tab.id
                 ? 'border-blue-500 text-blue-300'
                 : 'border-transparent text-gray-500 hover:text-gray-300'}`}
           >
-            {tab === 'log' ? 'Activity Log' : 'Activity Report'}
+            {tab.label}
           </button>
         ))}
       </div>
@@ -110,8 +115,10 @@ const App: React.FC = () => {
               onCameraFilterChange={setCameraFilter}
             />
           </>
-        ) : (
+        ) : activeTab === 'report' ? (
           <ReportTab />
+        ) : (
+          <EnvironmentSetup />
         )}
       </div>
 

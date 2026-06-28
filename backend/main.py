@@ -17,6 +17,8 @@ load_dotenv()
 
 import audio_analyzer
 import detector
+import environment_agent
+import environment_config
 import recordings_db
 import report_generator
 import s3_backup
@@ -411,6 +413,32 @@ async def delete_report_endpoint(report_id: str) -> dict:
     if not recordings_db.delete_report(report_id):
         raise HTTPException(status_code=404, detail="Report not found")
     return {"status": "deleted"}
+
+
+# ---------------------------------------------------------------------------
+# Environment configuration agent
+# ---------------------------------------------------------------------------
+
+
+class EnvironmentConfigRequest(PydanticBaseModel):
+    env_type: str
+    concerns: str = ""
+    context: str = ""
+
+
+@app.post("/environment/configure")
+async def configure_environment_endpoint(req: EnvironmentConfigRequest) -> dict:
+    """Run the AI agent to tune detection thresholds for a specific environment."""
+    try:
+        return await environment_agent.configure_environment(req.env_type, req.concerns, req.context)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/environment/config")
+async def get_environment_config() -> dict:
+    """Return the current environment configuration."""
+    return environment_config.load_config()
 
 
 # ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ import numpy as np
 
 import audio_analyzer
 import detector
+import environment_config as _env
 import reid
 from global_person_registry import GlobalPersonRegistry
 from models import DetectionEvent
@@ -298,6 +299,12 @@ class StreamProcessor:
             cy = (bb.get('y', 0) + bb.get('h', 0) / 2) / frame_h
             detections.append((cx, cy, ev))
 
+        # Load environment thresholds (in-memory cache, no disk hit)
+        _cfg = _env.get_thresholds()
+        loitering_secs = float(_cfg.get("loitering_seconds", LOITERING_SECONDS))
+        reid_area_gate = float(_cfg.get("reid_area_gate", REID_AREA_GATE))
+        reid_min_frames = int(_cfg.get("reid_min_frames", REID_MIN_FRAMES))
+
         # Expire old tracks
         expired = [
             tid for tid, t in self._person_tracks.items()
@@ -357,13 +364,13 @@ class StreamProcessor:
         reid_events: List[DetectionEvent] = []
         if self._registry is not None and self._camera_id is not None:
             for tid, track in self._person_tracks.items():
-                if track.reid_done or track.frames_seen < REID_MIN_FRAMES:
+                if track.reid_done or track.frames_seen < reid_min_frames:
                     continue
                 try:
                     bb = track.bbox or {}
                     bb_area = bb.get('w', 0) * bb.get('h', 0)
                     frame_area = frame_w * frame_h
-                    if bb_area < frame_area * REID_AREA_GATE or track.confidence < 0.55:
+                    if bb_area < frame_area * reid_area_gate or track.confidence < 0.55:
                         continue  # crop still too small — try again next frame
                     emb = reid.extract_embedding(frame, bb)
                     if emb is not None:
@@ -412,9 +419,9 @@ class StreamProcessor:
                     metadata=base_meta,
                 ))
 
-            elif (now - track.first_seen) >= LOITERING_SECONDS and (
+            elif (now - track.first_seen) >= loitering_secs and (
                 track.last_loitering_at is None
-                or (now - track.last_loitering_at) >= LOITERING_SECONDS
+                or (now - track.last_loitering_at) >= loitering_secs
             ):
                 track.last_loitering_at = now
                 meta: dict = {

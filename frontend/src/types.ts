@@ -73,6 +73,23 @@ export interface ReportSummary {
   narrative_preview: string;
 }
 
+export interface EnvironmentConfig {
+  environment_type: string;
+  description: string;
+  thresholds: {
+    person_confidence: number;
+    bag_confidence: number;
+    vehicle_confidence: number;
+    crowd_min_persons: number;
+    rapid_motion_threshold: number;
+    movement_threshold: number;
+    loitering_seconds: number;
+    reid_area_gate: number;
+    reid_min_frames: number;
+  };
+  disabled_events: string[];
+}
+
 export type WSMessage =
   | { type: 'all_activities'; activities: Activity[] }
   | { type: 'activity_opened'; activity: Activity }
