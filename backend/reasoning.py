@@ -4,11 +4,12 @@ from typing import Any, List, Optional
 
 from openai import AsyncOpenAI
 
+import environment_config as _env
 from models import DetectionEvent, Explanation
 
 _client: Optional[AsyncOpenAI] = None
 
-SYSTEM_PROMPT = """You are a security analysis AI that examines detection events from surveillance systems and provides detailed, evidence-based explanations.
+_BASE_SYSTEM_PROMPT = """You are a security analysis AI that examines detection events from surveillance systems and provides detailed, evidence-based explanations.
 
 You receive structured detection data from multiple sources:
 - CV (computer vision): object detection, pose estimation, tracking
@@ -32,6 +33,13 @@ Always respond with a valid JSON object (no markdown fences) matching this schem
 }
 
 Be specific — reference frame numbers, timestamps, event types. Acknowledge uncertainty. Never overstate confidence."""
+
+
+def _build_system_prompt() -> str:
+    ctx = _env.get_environment_context()
+    if ctx and not ctx.startswith("Deployment environment: generic"):
+        return _BASE_SYSTEM_PROMPT + f"\n\n--- Deployment Context ---\n{ctx}"
+    return _BASE_SYSTEM_PROMPT
 
 
 def _get_client() -> AsyncOpenAI:
@@ -137,7 +145,7 @@ async def explain_live(
         #model="gemma4:12b",
         max_tokens=2048,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": _build_system_prompt()},
             {"role": "user", "content": user_content},
         ],
     )
@@ -178,7 +186,7 @@ async def explain_retrospective(
         #model="gemma4:12b",
         max_tokens=2048,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": _build_system_prompt()},
             {"role": "user", "content": user_content},
         ],
     )

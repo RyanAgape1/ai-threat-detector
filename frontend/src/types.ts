@@ -73,6 +73,15 @@ export interface ReportSummary {
   narrative_preview: string;
 }
 
+export interface TimeRule {
+  label: string;
+  description: string;
+  start_hour: number;
+  end_hour: number;
+  thresholds?: Partial<EnvironmentConfig['thresholds']>;
+  disabled_events?: string[];
+}
+
 export interface EnvironmentConfig {
   environment_type: string;
   description: string;
@@ -88,6 +97,7 @@ export interface EnvironmentConfig {
     reid_min_frames: number;
   };
   disabled_events: string[];
+  time_rules: TimeRule[];
 }
 
 export type WSMessage =

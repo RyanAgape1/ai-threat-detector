@@ -1,5 +1,18 @@
 import React, { useEffect, useState } from 'react';
-import { EnvironmentConfig } from '../types';
+import { EnvironmentConfig, TimeRule } from '../types';
+
+function isRuleActive(rule: TimeRule): boolean {
+  const hour = new Date().getHours();
+  const { start_hour: s, end_hour: e } = rule;
+  if (s === e) return false;
+  return s < e ? hour >= s && hour < e : hour >= s || hour < e;
+}
+
+function fmtHour(h: number): string {
+  const ampm = h < 12 ? 'AM' : 'PM';
+  const display = h % 12 === 0 ? 12 : h % 12;
+  return `${display}${ampm}`;
+}
 
 const API = 'http://localhost:8000';
 
@@ -206,6 +219,59 @@ export const EnvironmentSetup: React.FC = () => {
               </div>
             )}
 
+            {/* Time rules */}
+            {currentConfig.time_rules.length > 0 && (
+              <div>
+                <p className="text-xs font-semibold text-gray-400 mb-2 uppercase tracking-wider">Time-Based Rules</p>
+                <div className="space-y-2">
+                  {currentConfig.time_rules.map((rule, i) => {
+                    const active = isRuleActive(rule);
+                    return (
+                      <div
+                        key={i}
+                        className={`rounded border p-3 ${
+                          active
+                            ? 'border-green-500/40 bg-green-500/8'
+                            : 'border-dash-border bg-dash-panel'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 mb-1 flex-wrap">
+                          <span className="text-xs font-semibold text-gray-200">{rule.label}</span>
+                          <span className="text-xs text-gray-500 font-mono">
+                            {fmtHour(rule.start_hour)} – {fmtHour(rule.end_hour)}
+                          </span>
+                          {active && (
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-green-500/15 text-green-400 border border-green-500/30">
+                              active now
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-gray-400 mb-2">{rule.description}</p>
+                        {rule.thresholds && Object.keys(rule.thresholds).length > 0 && (
+                          <div className="flex flex-wrap gap-x-4 gap-y-1">
+                            {Object.entries(rule.thresholds).map(([k, v]) => (
+                              <span key={k} className="text-xs font-mono text-gray-500">
+                                {k.replace(/_/g, ' ')}:{' '}
+                                <span className="text-gray-300">{String(v)}</span>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        {rule.disabled_events && rule.disabled_events.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-1.5">
+                            {rule.disabled_events.map((e) => (
+                              <span key={e} className="text-xs px-1.5 py-0.5 bg-red-500/10 text-red-400 rounded border border-red-500/20 font-mono">
+                                {e}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
           </>
         ) : (

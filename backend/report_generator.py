@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from openai import AsyncOpenAI
 
+import environment_config as _env
 import recordings_db
 
 IMPORTANT_EVENT_TYPES = {
@@ -165,6 +166,20 @@ async def generate_report(time_from: float, time_to: float) -> dict:
 
     # Generate narrative
     prompt = _build_llm_prompt(activities, time_from, time_to)
+    env_ctx = _env.get_environment_context()
+    env_section = (
+        f"\n\nDeployment context:\n{env_ctx}"
+        if env_ctx and not env_ctx.startswith("Deployment environment: generic")
+        else ""
+    )
+    report_system_prompt = (
+        "You are a security operations analyst writing a shift summary report. "
+        "Write a clear, professional narrative (3-5 paragraphs) covering: "
+        "overall activity level, significant incidents, any patterns or concerns, "
+        "and a brief overall threat assessment. "
+        "Plain prose only — no JSON, no bullet points, no markdown headers."
+        f"{env_section}"
+    )
     try:
         client = _get_client()
         response = await client.chat.completions.create(
@@ -172,16 +187,7 @@ async def generate_report(time_from: float, time_to: float) -> dict:
             #model="gemma4:12b",
             max_tokens=1024,
             messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a security operations analyst writing a shift summary report. "
-                        "Write a clear, professional narrative (3-5 paragraphs) covering: "
-                        "overall activity level, significant incidents, any patterns or concerns, "
-                        "and a brief overall threat assessment. "
-                        "Plain prose only — no JSON, no bullet points, no markdown headers."
-                    ),
-                },
+                {"role": "system", "content": report_system_prompt},
                 {"role": "user", "content": prompt},
             ],
         )

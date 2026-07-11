@@ -300,7 +300,7 @@ class StreamProcessor:
             detections.append((cx, cy, ev))
 
         # Load environment thresholds (in-memory cache, no disk hit)
-        _cfg = _env.get_thresholds()
+        _cfg = _env.get_effective_thresholds()
         loitering_secs = float(_cfg.get("loitering_seconds", LOITERING_SECONDS))
         reid_area_gate = float(_cfg.get("reid_area_gate", REID_AREA_GATE))
         reid_min_frames = int(_cfg.get("reid_min_frames", REID_MIN_FRAMES))

@@ -47,8 +47,8 @@ def detect(
     video_time = round(frame_num / fps, 2)
 
     # Load environment config once per frame (in-memory cache, no disk hit)
-    cfg = _env.get_thresholds()
-    disabled = set(_env.get_disabled_events())
+    cfg = _env.get_effective_thresholds()
+    disabled = set(_env.get_effective_disabled_events())
 
     person_conf_gate = cfg.get("person_confidence", 0.45)
     bag_conf_gate = cfg.get("bag_confidence", 0.50)
