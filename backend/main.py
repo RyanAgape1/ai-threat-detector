@@ -424,13 +424,19 @@ class EnvironmentConfigRequest(PydanticBaseModel):
     env_type: str
     concerns: str = ""
     context: str = ""
+    business_hours_open: Optional[str] = None   # "HH:MM" 24h
+    business_hours_close: Optional[str] = None  # "HH:MM" 24h
+    business_days: Optional[list] = None        # [0-6] Mon=0 Sun=6
 
 
 @app.post("/environment/configure")
 async def configure_environment_endpoint(req: EnvironmentConfigRequest) -> dict:
     """Run the AI agent to tune detection thresholds for a specific environment."""
     try:
-        return await environment_agent.configure_environment(req.env_type, req.concerns, req.context)
+        return await environment_agent.configure_environment(
+            req.env_type, req.concerns, req.context,
+            req.business_hours_open, req.business_hours_close, req.business_days,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 

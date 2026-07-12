@@ -91,6 +91,11 @@ _TOOLS = [
                                         "loitering_seconds": {"type": "number"},
                                     },
                                 },
+                                "days": {
+                                    "type": "array",
+                                    "items": {"type": "integer", "minimum": 0, "maximum": 6},
+                                    "description": "Days of week this rule applies (0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri, 5=Sat, 6=Sun). Empty array or omit for every day.",
+                                },
                                 "disabled_events": {
                                     "type": "array",
                                     "items": {"type": "string"},
@@ -119,9 +124,10 @@ Base threshold guidelines by environment:
 - School: child safety — loitering 15s, crowd_min_persons 6, suppress vehicle_detected if inside campus
 - Office: low baseline activity — loitering 60s, raise rapid_motion_threshold (0.35) to reduce noise, suppress movement
 
-Time-based rules — always create these for environments with varying activity levels:
+Time-based rules — always create these for environments with varying activity levels. IMPORTANT: if the user provides exact business hours, you MUST use those exact start_hour and end_hour values — do not round or adjust them:
 - "Business hours" (e.g. 8-20): normal/relaxed thresholds, more noise suppression
 - "After hours" (e.g. 20-8, overnight): lower person_confidence (0.35) so any person is caught, shorten loitering_seconds (10-15s), re-enable events you suppressed during the day (e.g. movement), lower crowd_min_persons (2)
+- If the user provides business days (e.g. Mon-Fri), set the days field on time rules accordingly: business hours rule gets those days, after-hours rule gets all days (empty) so closed days are fully covered by after-hours sensitivity
 - Environments like malls, offices, schools — after hours any person at all is significant, so make detection very sensitive
 - Parking lots at night — lower vehicle_confidence further (0.25), shorter loitering
 - 24/7 environments (airports, warehouses) — still create shift-based rules: e.g. overnight shift has fewer workers so crowd threshold lower
@@ -129,14 +135,60 @@ Time-based rules — always create these for environments with varying activity 
 After applying, write a 2-3 sentence plain-language explanation of what you changed and why, including the time rules."""
 
 
-async def configure_environment(env_type: str, concerns: str, context: str) -> dict:
+_DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+
+
+async def configure_environment(
+    env_type: str,
+    concerns: str,
+    context: str,
+    business_hours_open: Optional[str] = None,
+    business_hours_close: Optional[str] = None,
+    business_days: Optional[list] = None,
+) -> dict:
     """Run the agent to configure the environment. Returns {config, explanation}."""
     client = _get_client()
+
+    # Parse business hours into integer hours for the agent
+    hours_instruction = ""
+    open_hour: Optional[int] = None
+    close_hour: Optional[int] = None
+    if business_hours_open and business_hours_close:
+        try:
+            open_hour = int(business_hours_open.split(":")[0])
+            close_hour = int(business_hours_close.split(":")[0])
+            days_str = ""
+            days_instruction = ""
+            if business_days:
+                day_names = [_DAY_NAMES[d] for d in business_days if 0 <= d <= 6]
+                days_str = f", open days: {', '.join(day_names)} (days={business_days})"
+                days_instruction = (
+                    f" You MUST set days={business_days} exactly on the business hours rule — do not change these values keep these EXACT values. "
+                    f"Leave days=[] (empty) on the after-hours rule so it applies on all days including closed days."
+                )
+            hours_instruction = (
+                f"\nBusiness hours (EXACT — you MUST use these exact values{days_str}): "
+                f"open={open_hour:02d}:00 (start_hour={open_hour}), "
+                f"close={close_hour:02d}:00 (end_hour={close_hour}). "
+                f"Do not adjust these hours and do not adjust these days. Use start_hour={open_hour} end_hour={close_hour} "
+                f"for the business hours rule, and start_hour={close_hour} end_hour={open_hour} "
+                f"for the after-hours rule.{days_instruction}"
+            )
+        except (ValueError, IndexError):
+            pass
+    elif business_days:
+        # Days provided without hours — just pass them as context
+        day_names = [_DAY_NAMES[d] for d in business_days if 0 <= d <= 6]
+        hours_instruction = (
+            f"\nBusiness days: {', '.join(day_names)} (days={business_days}). "
+            f"Set these days on business hours time rules. Leave after-hours rule days=[] so it covers all days."
+        )
 
     user_message = (
         f"Environment type: {env_type}\n"
         f"Primary security concerns: {concerns or 'not specified'}\n"
-        f"Additional context: {context or 'none'}\n\n"
+        f"Additional context: {context or 'none'}"
+        f"{hours_instruction}\n\n"
         "Please configure the detection system for this environment."
     )
 
@@ -214,6 +266,48 @@ async def configure_environment(env_type: str, concerns: str, context: str) -> d
 
     if applied_config is None:
         applied_config = environment_config.load_config()
+
+    # Server-side enforcement: if business_days provided, force days onto the business hours
+    # rule regardless of what the LLM wrote, then add a closed-day all-day rule.
+    if business_days is not None and len(business_days) < 7:
+        closed_days = [d for d in range(7) if d not in business_days]
+        if closed_days:
+            time_rules = applied_config.get("time_rules", [])
+
+            # Force business_days onto the business hours rule (identified by open_hour start)
+            for rule in time_rules:
+                if open_hour is not None and rule.get("start_hour") == open_hour:
+                    rule["days"] = business_days
+                    break
+
+            # Find the after-hours rule: match by close_hour start, else any overnight rule
+            after_hours_rule = None
+            if close_hour is not None:
+                after_hours_rule = next(
+                    (r for r in time_rules if r.get("start_hour") == close_hour), None
+                )
+            if after_hours_rule is None:
+                after_hours_rule = next(
+                    (r for r in time_rules
+                     if r.get("start_hour", 0) > r.get("end_hour", 1)),
+                    None,
+                )
+
+            closed_rule: dict = {
+                "label": "Closed day",
+                "description": "After-hours sensitivity applied all day when the business is closed.",
+                "start_hour": 0,
+                "end_hour": 0,  # sentinel: all-day rule
+                "days": closed_days,
+            }
+            if after_hours_rule:
+                if "thresholds" in after_hours_rule:
+                    closed_rule["thresholds"] = after_hours_rule["thresholds"]
+                if "disabled_events" in after_hours_rule:
+                    closed_rule["disabled_events"] = after_hours_rule["disabled_events"]
+
+            applied_config["time_rules"].append(closed_rule)
+            environment_config.save_config(applied_config)
 
     return {
         "config": applied_config,

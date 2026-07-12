@@ -2,9 +2,17 @@ import React, { useEffect, useState } from 'react';
 import { EnvironmentConfig, TimeRule } from '../types';
 
 function isRuleActive(rule: TimeRule): boolean {
-  const hour = new Date().getHours();
+  const now = new Date();
+  const hour = now.getHours();
+  // getDay() returns 0=Sun ... 6=Sat; convert to 0=Mon ... 6=Sun to match backend
+  const weekday = (now.getDay() + 6) % 7;
   const { start_hour: s, end_hour: e } = rule;
-  if (s === e) return false;
+
+  // Check days first — empty/absent means every day
+  if (rule.days && rule.days.length > 0 && !rule.days.includes(weekday)) return false;
+
+  // start === end is the all-day sentinel
+  if (s === e) return true;
   return s < e ? hour >= s && hour < e : hour >= s || hour < e;
 }
 
@@ -15,6 +23,7 @@ function fmtHour(h: number): string {
 }
 
 const API = 'http://localhost:8000';
+const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 const ENV_TYPES = [
   { id: 'mall', label: 'Shopping Mall', desc: 'High foot traffic retail' },
@@ -24,6 +33,7 @@ const ENV_TYPES = [
   { id: 'school', label: 'School / Campus', desc: 'After-hours monitoring' },
   { id: 'office', label: 'Office Building', desc: 'Corporate, low baseline' },
   { id: 'generic', label: 'Generic', desc: 'Balanced default settings' },
+  { id: 'other', label: 'Other', desc: 'Describe your own environment' },
 ];
 
 const THRESHOLD_LABELS: Record<string, string> = {
@@ -42,6 +52,10 @@ const THRESHOLD_LABELS: Record<string, string> = {
 export const EnvironmentSetup: React.FC = () => {
   const [currentConfig, setCurrentConfig] = useState<EnvironmentConfig | null>(null);
   const [selectedEnvType, setSelectedEnvType] = useState('');
+  const [customEnvType, setCustomEnvType] = useState('');
+  const [businessOpen, setBusinessOpen] = useState('');
+  const [businessClose, setBusinessClose] = useState('');
+  const [businessDays, setBusinessDays] = useState<number[]>([]);
   const [concerns, setConcerns] = useState('');
   const [context, setContext] = useState('');
   const [loading, setLoading] = useState(false);
@@ -65,6 +79,11 @@ export const EnvironmentSetup: React.FC = () => {
 
   const handleConfigure = async () => {
     if (!selectedEnvType) { setError('Select an environment type first.'); return; }
+    if (selectedEnvType === 'other' && !customEnvType.trim()) {
+      setError('Describe your environment in the text field below.');
+      return;
+    }
+    const envType = selectedEnvType === 'other' ? customEnvType.trim() : selectedEnvType;
     setLoading(true);
     setError('');
     setExplanation('');
@@ -72,7 +91,14 @@ export const EnvironmentSetup: React.FC = () => {
       const res = await fetch(`${API}/environment/configure`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ env_type: selectedEnvType, concerns, context }),
+        body: JSON.stringify({
+          env_type: envType,
+          concerns,
+          context,
+          business_hours_open: businessOpen || null,
+          business_hours_close: businessClose || null,
+          business_days: businessDays.length > 0 ? businessDays : null,
+        }),
       });
       if (!res.ok) {
         const text = await res.text();
@@ -121,6 +147,69 @@ export const EnvironmentSetup: React.FC = () => {
               </button>
             ))}
           </div>
+          {selectedEnvType === 'other' && (
+            <input
+              autoFocus
+              type="text"
+              value={customEnvType}
+              onChange={(e) => setCustomEnvType(e.target.value)}
+              placeholder="e.g. hotel lobby, casino floor, hospital, train station..."
+              className="mt-2 w-full bg-dash-bg border border-blue-500/50 rounded p-2 text-xs text-gray-200 focus:outline-none focus:border-blue-400 placeholder-gray-600"
+            />
+          )}
+        </div>
+
+        {/* Business hours */}
+        <div>
+          <label className="text-xs text-gray-400 block mb-1">
+            Business hours <span className="text-gray-600">(optional — if set, the agent will use these exact hours for time rules)</span>
+          </label>
+          <div className="flex items-center gap-2">
+            <input
+              type="time"
+              value={businessOpen}
+              onChange={(e) => setBusinessOpen(e.target.value)}
+              className="bg-dash-bg border border-dash-border rounded p-2 text-xs text-gray-200 focus:outline-none focus:border-blue-500"
+            />
+            <span className="text-xs text-gray-500">to</span>
+            <input
+              type="time"
+              value={businessClose}
+              onChange={(e) => setBusinessClose(e.target.value)}
+              className="bg-dash-bg border border-dash-border rounded p-2 text-xs text-gray-200 focus:outline-none focus:border-blue-500"
+            />
+            {(businessOpen || businessClose) && (
+              <button
+                onClick={() => { setBusinessOpen(''); setBusinessClose(''); setBusinessDays([]); }}
+                className="text-xs text-gray-600 hover:text-gray-400 transition-colors"
+              >
+                clear
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+            {DAY_LABELS.map((label, i) => (
+              <button
+                key={i}
+                onClick={() => setBusinessDays((prev) =>
+                  prev.includes(i) ? prev.filter((d) => d !== i) : [...prev, i].sort()
+                )}
+                className={`px-2 py-0.5 rounded text-xs font-mono border transition-colors select-none ${
+                  businessDays.includes(i)
+                    ? 'border-blue-500 bg-blue-500/15 text-blue-300'
+                    : 'border-dash-border text-gray-500 hover:border-gray-500 hover:text-gray-300'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+            <button
+              onClick={() => setBusinessDays([0, 1, 2, 3, 4])}
+              className="px-2 py-0.5 rounded text-xs border border-dash-border text-gray-600 hover:text-gray-400 hover:border-gray-500 transition-colors select-none"
+            >
+              Weekdays
+            </button>
+          </div>
         </div>
 
         {/* Concerns */}
@@ -144,7 +233,7 @@ export const EnvironmentSetup: React.FC = () => {
           <textarea
             value={context}
             onChange={(e) => setContext(e.target.value)}
-            placeholder="e.g. 24/7 operation, cameras cover main entrance and parking, busy weekends..."
+            placeholder="e.g. cameras cover main entrance and parking lot, high theft risk area, near public transit..."
             className="w-full bg-dash-bg border border-dash-border rounded p-2 text-xs text-gray-200 h-16 resize-none focus:outline-none focus:border-blue-500 placeholder-gray-600"
           />
         </div>
@@ -238,8 +327,15 @@ export const EnvironmentSetup: React.FC = () => {
                         <div className="flex items-center gap-2 mb-1 flex-wrap">
                           <span className="text-xs font-semibold text-gray-200">{rule.label}</span>
                           <span className="text-xs text-gray-500 font-mono">
-                            {fmtHour(rule.start_hour)} – {fmtHour(rule.end_hour)}
+                            {rule.start_hour === 0 && rule.end_hour === 0
+                              ? 'all day'
+                              : `${fmtHour(rule.start_hour)} – ${fmtHour(rule.end_hour)}`}
                           </span>
+                          {rule.days && rule.days.length > 0 && (
+                            <span className="text-xs text-gray-500 font-mono">
+                              {rule.days.map((d) => DAY_LABELS[d]).join(' ')}
+                            </span>
+                          )}
                           {active && (
                             <span className="text-xs px-1.5 py-0.5 rounded bg-green-500/15 text-green-400 border border-green-500/30">
                               active now

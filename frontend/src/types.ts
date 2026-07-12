@@ -78,6 +78,7 @@ export interface TimeRule {
   description: string;
   start_hour: number;
   end_hour: number;
+  days?: number[];  // 0=Mon ... 6=Sun, empty/absent = every day
   thresholds?: Partial<EnvironmentConfig['thresholds']>;
   disabled_events?: string[];
 }

@@ -65,21 +65,26 @@ def save_config(config: dict) -> None:
 
 
 def get_active_time_rule() -> Optional[dict]:
-    """Return the first time rule whose window covers the current local hour, or None."""
-    hour = datetime.now().hour
+    """Return the first time rule whose window and days cover the current local time, or None."""
+    now = datetime.now()
+    hour = now.hour
+    weekday = now.weekday()  # 0=Mon, 6=Sun
     for rule in load_config().get("time_rules", []):
         start = int(rule.get("start_hour", 0))
         end = int(rule.get("end_hour", 0))
-        if start == end:
+        # start == end is the all-day sentinel (covers entire day, no time restriction)
+        if start != end:
+            if start < end:
+                hour_match = start <= hour < end
+            else:
+                hour_match = hour >= start or hour < end
+            if not hour_match:
+                continue
+        # Check days — empty/absent means every day
+        days = rule.get("days", [])
+        if days and weekday not in days:
             continue
-        if start < end:
-            # e.g. 8-18: daytime window
-            if start <= hour < end:
-                return rule
-        else:
-            # overnight e.g. 22-6: wraps midnight
-            if hour >= start or hour < end:
-                return rule
+        return rule
     return None
 
 
@@ -109,12 +114,16 @@ def get_environment_context() -> str:
     lines = [f"Deployment environment: {env_type}"]
     if description:
         lines.append(description)
+    _DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
     rule = get_active_time_rule()
     if rule:
         start = rule.get("start_hour", "?")
         end = rule.get("end_hour", "?")
+        days = rule.get("days", [])
+        days_str = "/".join(_DAY_NAMES[d] for d in days) if days else "every day"
         lines.append(
-            f"Active time rule: \"{rule.get('label', 'unnamed')}\" ({start:02d}:00-{end:02d}:00) — "
+            f"Active time rule: \"{rule.get('label', 'unnamed')}\" "
+            f"({start:02d}:00-{end:02d}:00, {days_str}) — "
             f"{rule.get('description', '')}"
         )
     return "\n".join(lines)
