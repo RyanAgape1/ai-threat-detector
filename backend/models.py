@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 class DetectionEvent(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     timestamp: float = Field(default_factory=time.time)
-    source: Literal["cv", "audio", "behavior"]
+    source: Literal["cv", "audio", "behavior", "custom"]
     type: str
     confidence: float
     metadata: Dict = {}

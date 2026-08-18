@@ -42,12 +42,14 @@ const SOURCE_COLORS: Record<string, string> = {
   cv: 'text-purple-400 bg-purple-900/30',
   audio: 'text-teal-400 bg-teal-900/30',
   behavior: 'text-blue-400 bg-blue-900/30',
+  custom: 'text-amber-400 bg-amber-900/30',
 };
 
 const SOURCE_LABELS: Record<string, string> = {
   cv: 'CV',
   audio: 'AUD',
   behavior: 'BEH',
+  custom: 'RULE',
 };
 
 export const RecordingsModal: React.FC<RecordingsModalProps> = ({
@@ -330,7 +332,7 @@ const ActivityCard: React.FC<{
               )}
               {summary.evidence_for.length > 0 && (
                 <div className="space-y-0.5">
-                  <p className="font-mono text-[9px] text-emerald-700 uppercase tracking-widest">Evidence for</p>
+                  <p className="font-mono text-[9px] text-emerald-700 uppercase tracking-widest">Main information</p>
                   {summary.evidence_for.map((e, i) => (
                     <p key={i} className="font-mono text-[9px] text-gray-600 pl-2">· {e}</p>
                   ))}
@@ -338,7 +340,7 @@ const ActivityCard: React.FC<{
               )}
               {summary.evidence_against.length > 0 && (
                 <div className="space-y-0.5">
-                  <p className="font-mono text-[9px] text-red-800 uppercase tracking-widest">Evidence against</p>
+                  <p className="font-mono text-[9px] text-red-800 uppercase tracking-widest">Side notes</p>
                   {summary.evidence_against.map((e, i) => (
                     <p key={i} className="font-mono text-[9px] text-gray-600 pl-2">· {e}</p>
                   ))}

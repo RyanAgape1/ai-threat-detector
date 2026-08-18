@@ -40,6 +40,10 @@ def _fmt(ts: float) -> str:
 
 def _is_important(event: dict) -> bool:
     t = event['type']
+    # Custom events carry their own importance, set when the designer agent
+    # installed them — a table timer shouldn't need a hardcoded entry here.
+    if event.get('metadata', {}).get('custom_event'):
+        return event['metadata'].get('importance') == 'important'
     return t in IMPORTANT_EVENT_TYPES or (
         t in HIGH_CONFIDENCE_TYPES and event['confidence'] >= HIGH_CONFIDENCE_THRESHOLD
     )
@@ -167,11 +171,7 @@ async def generate_report(time_from: float, time_to: float) -> dict:
     # Generate narrative
     prompt = _build_llm_prompt(activities, time_from, time_to)
     env_ctx = _env.get_environment_context()
-    env_section = (
-        f"\n\nDeployment context:\n{env_ctx}"
-        if env_ctx and not env_ctx.startswith("Deployment environment: generic")
-        else ""
-    )
+    env_section = f"\n\nDeployment context:\n{env_ctx}" if env_ctx else ""
     report_system_prompt = (
         "You are a security operations analyst writing a shift summary report. "
         "Write a clear, professional narrative (3-5 paragraphs) covering: "

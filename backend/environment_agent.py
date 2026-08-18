@@ -11,15 +11,26 @@ import environment_config
 
 _client: Optional[AsyncOpenAI] = None
 
+# Ollama caps generation at a 4096-token context by default and gemma4 is a
+# reasoning model, so its thinking tokens can exhaust the budget before the tool
+# call is emitted — the response comes back empty with finish_reason="length".
+# Disabling thinking makes tool calls reliable. Set False if switching to gpt-4o,
+# which rejects this parameter.
+_USE_OLLAMA = False
+
+
+def _provider_kwargs() -> dict:
+    return {"extra_body": {"think": False}} if _USE_OLLAMA else {}
+
 
 def _get_client() -> AsyncOpenAI:
     global _client
     if _client is None:
-        #_client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-        _client = AsyncOpenAI(
-            base_url="http://localhost:11434/v1",
-            api_key="ollama"
-        )
+        _client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        #_client = AsyncOpenAI(
+        #    base_url="http://localhost:11434/v1",
+        #    api_key="ollama"
+        #)
     return _client
 
 
@@ -202,11 +213,12 @@ async def configure_environment(
 
     for _ in range(6):
         response = await client.chat.completions.create(
-            #model="gpt-4o",
-            model="gemma4:12b",
+            model="gpt-4o",
+            #model="gemma4:12b",
             messages=messages,
             tools=_TOOLS,
             tool_choice="auto",
+            **_provider_kwargs(),
         )
 
         msg = response.choices[0].message

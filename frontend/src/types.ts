@@ -1,7 +1,9 @@
+export type EventSource = 'cv' | 'audio' | 'behavior' | 'custom';
+
 export interface DetectionEvent {
   id: string;
   timestamp: number;
-  source: 'cv' | 'audio' | 'behavior';
+  source: EventSource;
   type: string;
   confidence: number;
   metadata: Record<string, unknown>;
@@ -99,6 +101,103 @@ export interface EnvironmentConfig {
   };
   disabled_events: string[];
   time_rules: TimeRule[];
+  custom_events?: CustomEventDef[];
+  zones?: Zone[];
+}
+
+/* ── Agent-designed detection events ─────────────────────────────────────── */
+
+export type RuleKind =
+  | 'dwell'
+  | 'zone_count'
+  | 'zone_vacant'
+  | 'object_present'
+  | 'proximity'
+  | 'event_rate';
+
+export type Importance = 'routine' | 'notable' | 'important';
+
+export interface CustomEventDef {
+  event_type: string;
+  label: string;
+  description: string;
+  kind: RuleKind;
+  params: Record<string, unknown>;
+  zone: string | null;
+  importance: Importance;
+  enabled: boolean;
+  created_by: string;
+}
+
+export interface Zone {
+  name: string;
+  description: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  needs_calibration: boolean;
+}
+
+export interface NeededEvent {
+  purpose: string;
+  /** Optional: a local model occasionally omits or misspells this field. */
+  rationale?: string;
+  suggested_kind: RuleKind;
+  suggested_target: string;
+  importance: Importance;
+  needs_zone: boolean;
+}
+
+export interface BuiltinChange {
+  event_type: string;
+  action: 'enable' | 'disable';
+  reason: string;
+}
+
+/** Output of the context analyst agent (read-only stage). */
+export interface ContextAnalysis {
+  context_understood: string;
+  requires_changes: boolean;
+  needed_events: NeededEvent[];
+  builtin_changes: BuiltinChange[];
+  unsupported_requests: string[];
+}
+
+/** Output of the event designer agent (writing stage). */
+export interface DesignResult {
+  analysis: ContextAnalysis;
+  custom_events: CustomEventDef[];
+  zones: Zone[];
+  disabled_events: string[];
+  explanation: string;
+  errors: string[];
+  applied: boolean;
+}
+
+/** GET /detection-events */
+export interface DetectionEventsState {
+  custom_events: CustomEventDef[];
+  zones: Zone[];
+  disabled_events: string[];
+  effective_disabled_events: string[];
+  builtin_events: string[];
+  rule_kinds: Record<string, string>;
+  object_classes: string[];
+}
+
+/** One live dwell timer. Display-only — never enters the activities array. */
+export interface DwellTimer {
+  event_type: string;
+  label: string;
+  identity: string;
+  track_id: number | null;
+  global_person_id: string | null;
+  elapsed_seconds: number;
+  elapsed_human: string;
+  min_seconds: number;
+  fired_count: number;
+  out_of_sight: boolean;
 }
 
 export type WSMessage =
@@ -107,4 +206,5 @@ export type WSMessage =
   | { type: 'event_added'; activity_id: string; event: DetectionEvent; frame_b64?: string }
   | { type: 'reasoning_update'; activity_id: string; explanation: Explanation }
   | { type: 'activity_closed'; activity_id: string; summary: Explanation }
+  | { type: 'dwell_timers'; camera_id: string; timers: DwellTimer[] }
   | ({ type: 'upload_progress' } & UploadProgress);

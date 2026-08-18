@@ -1,3 +1,5 @@
+import type { EventSource } from './types';
+
 /**
  * Format a Unix timestamp as a relative time string ("2m ago", "just now", etc.)
  */
@@ -67,34 +69,38 @@ export function getThreatBorder(level: ThreatLevel | string): string {
   }
 }
 
-export function getSourceColor(source: 'cv' | 'audio' | 'behavior'): string {
+export function getSourceColor(source: EventSource): string {
   switch (source) {
     case 'cv': return 'text-purple-400';
     case 'audio': return 'text-cyan-400';
     case 'behavior': return 'text-green-400';
+    case 'custom': return 'text-amber-400';
   }
 }
 
-export function getSourceBg(source: 'cv' | 'audio' | 'behavior'): string {
+export function getSourceBg(source: EventSource): string {
   switch (source) {
     case 'cv': return 'bg-purple-950/60 border-purple-800/40';
     case 'audio': return 'bg-cyan-950/60 border-cyan-800/40';
     case 'behavior': return 'bg-green-950/60 border-green-800/40';
+    case 'custom': return 'bg-amber-950/60 border-amber-800/40';
   }
 }
 
-export function getSourceIcon(source: 'cv' | 'audio' | 'behavior'): string {
+export function getSourceIcon(source: EventSource): string {
   switch (source) {
+    case 'custom': return '⚙';
     case 'cv': return '👁';
     case 'audio': return '🔊';
     case 'behavior': return '🚶';
   }
 }
 
-export function getSourceLabel(source: 'cv' | 'audio' | 'behavior'): string {
+export function getSourceLabel(source: EventSource): string {
   switch (source) {
     case 'cv': return 'CV';
     case 'audio': return 'AUD';
     case 'behavior': return 'BEH';
+    case 'custom': return 'RULE';
   }
 }

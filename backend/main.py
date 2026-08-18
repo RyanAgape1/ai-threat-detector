@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import tempfile
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Dict, Optional
@@ -16,9 +17,12 @@ from fastapi.responses import FileResponse
 load_dotenv()
 
 import audio_analyzer
+import context_analyst_agent
+import custom_events
 import detector
 import environment_agent
 import environment_config
+import event_designer_agent
 import recordings_db
 import report_generator
 import s3_backup
@@ -39,6 +43,11 @@ _ws_lock = asyncio.Lock()
 # Per-session state for live camera streams
 stream_processors: Dict[str, "StreamProcessor"] = {}
 _frame_locks: Dict[str, asyncio.Lock] = {}
+
+# Live dwell-counter throttling, per camera session
+TIMER_BROADCAST_INTERVAL = 1.0  # seconds
+_last_timer_broadcast: Dict[str, float] = {}
+_had_timers: Dict[str, bool] = {}
 
 # Cross-camera person Re-ID registry (shared across all camera sessions)
 person_registry = GlobalPersonRegistry()
@@ -116,6 +125,8 @@ async def lifespan(app: FastAPI):
             s3_backup.backup_recording(meta["filepath"], meta["filename"])
     stream_processors.clear()
     _frame_locks.clear()
+    _last_timer_broadcast.clear()
+    _had_timers.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +179,8 @@ async def clear_activities() -> dict:
         proc.reset()
     stream_processors.clear()
     _frame_locks.clear()
+    _last_timer_broadcast.clear()
+    _had_timers.clear()
     await broadcast({"type": "all_activities", "activities": []})
     return {"status": "cleared"}
 
@@ -292,6 +305,22 @@ async def stream_frame(
     for event in events:
         event.metadata["camera_id"] = session_id
         await bus.ingest(event, frame_b64)
+
+    # Live dwell counter. Broadcast on its own message type at most once a second
+    # — deliberately NOT ingested as events, which would trigger AI reasoning
+    # every couple of seconds and stop activities ever closing.
+    now = time.monotonic()
+    if now - _last_timer_broadcast.get(session_id, 0.0) >= TIMER_BROADCAST_INTERVAL:
+        _last_timer_broadcast[session_id] = now
+        timers = processor.dwell_timers()
+        if timers or _had_timers.get(session_id):
+            _had_timers[session_id] = bool(timers)
+            await broadcast({
+                "type": "dwell_timers",
+                "camera_id": session_id,
+                "timers": timers,
+            })
+
     return {"status": "ok", "events": len(events)}
 
 
@@ -318,6 +347,8 @@ async def stream_reset(session_id: str = Form(...)) -> dict:
     """Finalize recording and tear down a camera session."""
     processor = stream_processors.pop(session_id, None)
     _frame_locks.pop(session_id, None)
+    _last_timer_broadcast.pop(session_id, None)
+    _had_timers.pop(session_id, None)
     if processor is not None:
         meta = processor.stop_recording()
         if meta:
@@ -445,6 +476,120 @@ async def configure_environment_endpoint(req: EnvironmentConfigRequest) -> dict:
 async def get_environment_config() -> dict:
     """Return the current environment configuration."""
     return environment_config.load_config()
+
+
+# ---------------------------------------------------------------------------
+# Detection event agents (context analyst -> event designer)
+# ---------------------------------------------------------------------------
+
+
+class DetectionEventRequest(PydanticBaseModel):
+    env_type: str = ""
+    concerns: str = ""
+    context: str = ""
+    analysis: Optional[dict] = None  # pass an earlier analysis to skip re-running it
+
+
+@app.get("/detection-events")
+async def list_detection_events() -> dict:
+    """Everything the Environment page needs to render detection events."""
+    cfg = environment_config.load_config()
+    return {
+        "custom_events": cfg.get("custom_events", []),
+        "zones": cfg.get("zones", []),
+        "disabled_events": cfg.get("disabled_events", []),
+        "effective_disabled_events": environment_config.get_effective_disabled_events(),
+        "builtin_events": custom_events.BUILTIN_EVENT_TYPES,
+        "rule_kinds": {k: v["summary"] for k, v in custom_events.RULE_KINDS.items()},
+        "object_classes": detector.available_object_classes(),
+    }
+
+
+@app.post("/detection-events/analyze")
+async def analyze_detection_events(req: DetectionEventRequest) -> dict:
+    """Agent 1: read the operator's free-text context and report whether the
+    detection events need to change. Read-only — installs nothing."""
+    try:
+        return await context_analyst_agent.analyze_context(
+            req.env_type, req.concerns, req.context
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/detection-events/apply")
+async def apply_detection_events(req: DetectionEventRequest) -> dict:
+    """Agent 2: design and install custom detection events. Runs agent 1 first
+    when no prior analysis is supplied."""
+    try:
+        return await event_designer_agent.design_events(
+            req.env_type, req.concerns, req.context, req.analysis
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+class UpdateEventRequest(PydanticBaseModel):
+    enabled: Optional[bool] = None
+    params: Optional[dict] = None  # partial: merged over the existing params
+
+
+@app.patch("/detection-events/{event_type}")
+async def update_detection_event(event_type: str, req: UpdateEventRequest) -> dict:
+    """Enable/disable an agent-designed event, and/or retune its parameters.
+
+    Parameter edits go through the same validation as agent output, so operator
+    tuning cannot install a rule the engine would choke on.
+    """
+    existing = environment_config.get_custom_event(event_type)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Custom event not found")
+
+    if req.params is not None:
+        candidate = dict(existing)
+        candidate["params"] = {**existing.get("params", {}), **req.params}
+        if req.enabled is not None:
+            candidate["enabled"] = req.enabled
+        validated, err = custom_events.normalize_definition(candidate)
+        if err or validated is None:
+            raise HTTPException(status_code=400, detail=err or "Invalid parameters")
+        environment_config.replace_custom_event(event_type, validated)
+        return {"status": "ok", "event": validated}
+
+    if req.enabled is None:
+        raise HTTPException(status_code=400, detail="Provide 'enabled' and/or 'params'")
+
+    environment_config.set_custom_event_enabled(event_type, req.enabled)
+    return {"status": "ok", "event_type": event_type, "enabled": req.enabled}
+
+
+@app.delete("/detection-events/{event_type}")
+async def delete_detection_event(event_type: str) -> dict:
+    if not environment_config.delete_custom_event(event_type):
+        raise HTTPException(status_code=404, detail="Custom event not found")
+    return {"status": "deleted", "event_type": event_type}
+
+
+class ZoneUpdateRequest(PydanticBaseModel):
+    x: float
+    y: float
+    w: float
+    h: float
+
+
+@app.patch("/detection-events/zones/{zone_name}")
+async def update_zone_endpoint(zone_name: str, req: ZoneUpdateRequest) -> dict:
+    """Recalibrate an agent-guessed zone to the real camera view."""
+    zone, err = custom_events.normalize_zone(
+        {"name": zone_name, "x": req.x, "y": req.y, "w": req.w, "h": req.h}
+    )
+    if err or zone is None:
+        raise HTTPException(status_code=400, detail=err or "Invalid zone")
+    if not environment_config.update_zone(
+        zone_name, zone["x"], zone["y"], zone["w"], zone["h"]
+    ):
+        raise HTTPException(status_code=404, detail="Zone not found")
+    return {"status": "ok", "zone": zone}
 
 
 # ---------------------------------------------------------------------------

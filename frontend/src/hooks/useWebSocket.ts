@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import type { Activity, UploadProgress, WSMessage } from '../types';
+import type { Activity, DwellTimer, UploadProgress, WSMessage } from '../types';
 
 const WS_URL = 'ws://localhost:8000/ws';
 const RECONNECT_DELAY = 3000;
@@ -13,6 +13,7 @@ export interface UseWebSocketReturn {
   uploadProgress: UploadProgress | null;
   videoUrl: string | null;
   snapshots: Record<string, string>;
+  dwellTimers: Record<string, DwellTimer[]>;
   clearAll: () => Promise<void>;
 }
 
@@ -23,6 +24,8 @@ export function useWebSocket(): UseWebSocketReturn {
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [snapshots, setSnapshots] = useState<Record<string, string>>({});
+  // camera_id -> live dwell timers. Separate from activities on purpose.
+  const [dwellTimers, setDwellTimers] = useState<Record<string, DwellTimer[]>>({});
   const videoBlobRef = useRef<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -114,6 +117,17 @@ export function useWebSocket(): UseWebSocketReturn {
             );
             break;
 
+          case 'dwell_timers':
+            // Kept in its own state, deliberately NOT merged into activities —
+            // these arrive every second and are display-only.
+            setDwellTimers((prev) => {
+              const next = { ...prev };
+              if (msg.timers.length === 0) delete next[msg.camera_id];
+              else next[msg.camera_id] = msg.timers;
+              return next;
+            });
+            break;
+
           case 'upload_progress':
             setUploadProgress({
               job_id: msg.job_id,
@@ -139,6 +153,7 @@ export function useWebSocket(): UseWebSocketReturn {
         setConnected(false);
         setActivities([]);
         setSelectedId(null);
+        setDwellTimers({});
         // Don't clear snapshots here — if the WS reconnects during the same
         // session, all_activities restores the events but frame data isn't
         // re-sent. Keeping snapshots means clicking events still shows frames.
@@ -197,6 +212,7 @@ export function useWebSocket(): UseWebSocketReturn {
     setActivities([]);
     setSelectedId(null);
     setSnapshots({});
+    setDwellTimers({});
     try {
       const res = await fetch('http://localhost:8000/activities/clear', { method: 'POST' });
       if (!res.ok) console.error('Clear failed:', res.status, await res.text());
@@ -205,5 +221,5 @@ export function useWebSocket(): UseWebSocketReturn {
     }
   }, []);
 
-  return { activities, connected, selectedId, setSelectedId, uploadVideo, uploadProgress, videoUrl, snapshots, clearAll };
+  return { activities, connected, selectedId, setSelectedId, uploadVideo, uploadProgress, videoUrl, snapshots, dwellTimers, clearAll };
 }

@@ -5,7 +5,7 @@ Replaces the hand-crafted OpenCV heuristics with real object detection.
 import cv2
 import numpy as np
 import torch
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import environment_config as _env
 from models import DetectionEvent
@@ -33,18 +33,34 @@ def load_model():
     return _model
 
 
+def available_object_classes() -> List[str]:
+    """Every class the loaded model can detect (COCO 80 for YOLOv8n)."""
+    if _model is not None and getattr(_model, 'names', None):
+        names = _model.names
+        return sorted(names.values()) if isinstance(names, dict) else sorted(names)
+    import custom_events
+    return list(custom_events.COCO_CLASSES)
+
+
 def detect(
     frame: np.ndarray,
     prev_gray: Optional[np.ndarray],
     frame_num: int,
     fps: float = 2.0,
-) -> List[DetectionEvent]:
+) -> Tuple[List[DetectionEvent], List[dict]]:
     """
     Run YOLO object detection + optical-flow motion analysis on a BGR frame.
     fps: actual video FPS (for computing video_time_seconds used by UI seek).
+
+    Returns (events, detections). `detections` is every YOLO box above the base
+    confidence floor — including classes the built-in events ignore — so that
+    custom event rules can reach the full COCO class list. Each entry carries
+    both pixel bbox and frame-normalised centroid.
     """
     events: List[DetectionEvent] = []
+    detections: List[dict] = []
     video_time = round(frame_num / fps, 2)
+    frame_h, frame_w = frame.shape[:2]
 
     # Load environment config once per frame (in-memory cache, no disk hit)
     cfg = _env.get_effective_thresholds()
@@ -64,11 +80,24 @@ def detect(
         person_boxes: List[tuple] = []  # (cx, cy, x1, y1, x2, y2, conf)
         bag_boxes: List[tuple] = []     # (cx, cy, x1, y1, x2, y2, conf, class_name)
 
+        class_names = getattr(model, 'names', {}) or {}
+
         for box in results.boxes:
             cls  = int(box.cls[0])
             conf = float(box.conf[0])
             x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
             cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+
+            # Record every detection for the custom rule engine, whatever the
+            # built-in gates below decide to do with it.
+            detections.append({
+                'class_id': cls,
+                'class_name': class_names.get(cls, str(cls)),
+                'confidence': conf,
+                'bbox': {'x': x1, 'y': y1, 'w': x2 - x1, 'h': y2 - y1},
+                'cx': cx / frame_w if frame_w else 0.0,
+                'cy': cy / frame_h if frame_h else 0.0,
+            })
 
             if cls in _VEHICLES and conf >= vehicle_conf_gate:
                 if 'vehicle_detected' not in disabled:
@@ -162,4 +191,4 @@ def detect(
                 },
             ))
 
-    return events
+    return events, detections

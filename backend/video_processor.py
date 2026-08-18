@@ -14,6 +14,7 @@ import audio_analyzer
 import detector
 import environment_config as _env
 import reid
+from custom_events import CustomEventEngine
 from global_person_registry import GlobalPersonRegistry
 from models import DetectionEvent
 
@@ -112,13 +113,27 @@ class VideoProcessor:
         frame_num = 0
         sampled = 0
 
+        # Custom rules are evaluated in *video time*, not wall-clock: this loop
+        # is paced at ~2x real time, so wall-clock durations would be wrong.
+        engine = CustomEventEngine(camera_id=None)
+
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
                 break
 
             if frame_num % sample_every == 0:
-                events = detector.detect(frame, prev_gray, frame_num, fps=fps)
+                events, detections = detector.detect(frame, prev_gray, frame_num, fps=fps)
+                video_time = frame_num / fps if fps else 0.0
+                # tracks=None: uploaded video has no person tracker, so
+                # track-based rules (dwell) stay dormant here by design.
+                events = events + engine.evaluate(
+                    now=video_time,
+                    detections=detections,
+                    tracks=None,
+                    builtin_events=events,
+                    frame_meta={'frame_id': frame_num, 'video_time_seconds': round(video_time, 2)},
+                )
                 frame_b64: Optional[str] = None
                 if events:
                     frame_b64 = _encode_frame(frame)
@@ -205,6 +220,9 @@ class StreamProcessor:
         # Person tracking state
         self._person_tracks: Dict[int, _PersonTrack] = {}
         self._next_track_id: int = 0
+        # Custom (agent-designed) detection rules for this camera session
+        self._custom_engine = CustomEventEngine(camera_id=camera_id)
+        self._last_frame_shape: Optional[Tuple[int, int]] = None  # (h, w)
 
     def process_frame_bytes(self, jpeg_bytes: bytes) -> Tuple[list, Optional[str], Optional[dict]]:
         """Returns (events, frame_b64, checkpoint_meta).
@@ -250,12 +268,16 @@ class StreamProcessor:
             print(f"[recording] write error: {exc}")
 
         is_first_frame = (self._frame_count == 0)
-        raw_events = detector.detect(frame, self._prev_gray, self._frame_count - self._rec_frame_offset, fps=2.0)
+        raw_events, detections = detector.detect(
+            frame, self._prev_gray, self._frame_count - self._rec_frame_offset, fps=2.0
+        )
         self._prev_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         self._frame_count += 1
 
         h, w = frame.shape[:2]
+        self._last_frame_shape = (h, w)
         events = self._apply_person_tracking(raw_events, frame, w, h)
+        events = events + self._evaluate_custom_events(events, detections)
 
         # First frame of a new camera session: guarantee an activity opens even
         # if YOLO sees nothing yet (prev_gray is None, motion detection is skipped).
@@ -440,6 +462,51 @@ class StreamProcessor:
 
         return other_events + tracking_events + reid_events
 
+    def _evaluate_custom_events(
+        self, builtin_events: List[DetectionEvent], detections: List[dict]
+    ) -> List[DetectionEvent]:
+        """Run the agent-designed rules against this frame.
+
+        Person tracks are handed over as plain dicts so custom_events never has
+        to know about _PersonTrack.
+        """
+        frame_h, frame_w = self._last_frame_shape or (1, 1)
+        tracks = []
+        for t in self._person_tracks.values():
+            bb = t.bbox or {}
+            tracks.append({
+                'track_id': t.track_id,
+                'global_person_id': t.global_person_id,
+                'cx': t.cx,
+                'cy': t.cy,
+                # Normalised body size — lets stationary-mode drift scale with how
+                # close the person is to the camera.
+                'nw': (bb.get('w', 0) / frame_w) if frame_w else 0.0,
+                'nh': (bb.get('h', 0) / frame_h) if frame_h else 0.0,
+                'first_seen': t.first_seen,
+                'last_seen': t.last_seen,
+                'confidence': t.confidence,
+            })
+        try:
+            return self._custom_engine.evaluate(
+                now=time.time(),
+                detections=detections,
+                tracks=tracks,
+                builtin_events=builtin_events,
+                frame_meta={'frame_id': self._frame_count - self._rec_frame_offset},
+            )
+        except Exception as exc:
+            print(f'[custom_events] engine error: {exc}')
+            return []
+
+    def dwell_timers(self) -> list:
+        """Live dwell timer snapshot for the UI counter (no events emitted)."""
+        try:
+            return self._custom_engine.active_timers(time.time(), _env.get_custom_events())
+        except Exception as exc:
+            print(f'[custom_events] timer snapshot failed: {exc}')
+            return []
+
     def _annotate_frame(self, frame: np.ndarray) -> np.ndarray:
         """Draw bounding boxes and person ID labels for all active tracks."""
         if not self._person_tracks:
@@ -522,3 +589,4 @@ class StreamProcessor:
         self._rec_frame_offset = 0
         self._person_tracks = {}
         self._next_track_id = 0
+        self._custom_engine.reset()

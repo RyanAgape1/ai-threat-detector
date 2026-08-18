@@ -14,6 +14,12 @@ REASON_INTERVAL_SECONDS = 5.0   # also trigger every 5 s while activity is activ
 CLEANUP_INTERVAL_SECONDS = 300  # run memory cleanup every 5 minutes
 ACTIVITY_MAX_AGE_SECONDS = 3600 # evict closed activities older than 1 hour
 
+# Frames held in memory per activity so the closing summary can see the whole
+# incident rather than its last few seconds. Frames arrive at roughly 2 fps and
+# are 640px JPEGs (~40 KB each), so this is about 5 minutes of continuous
+# activity and ~25 MB before thinning starts.
+MAX_ACTIVITY_FRAMES = 600
+
 
 class EvidenceBus:
     def __init__(self, broadcast_fn: Callable[[dict], Awaitable[None]]):
@@ -32,7 +38,8 @@ class EvidenceBus:
         # Events received since the last reasoning call
         self._event_counts_since_last_reason: Dict[str, int] = {}
 
-        # Rolling buffer of representative frames per activity (last 4 base64 JPEGs)
+        # Every frame seen during each activity, oldest first. The closing
+        # summary reads the whole list; live reasoning only looks at the tail.
         self._frames: Dict[str, List[str]] = {}
 
         self._cleanup_task: Optional[asyncio.Task] = None
@@ -63,12 +70,21 @@ class EvidenceBus:
             self._event_counts_since_last_reason.get(activity_id, 0) + 1
         )
 
-        # Keep a rolling buffer of up to 4 frames for this activity
+        # Accumulate the activity's frames for the closing summary.
         if frame_b64 is not None:
             buf = self._frames.setdefault(activity_id, [])
-            buf.append(frame_b64)
-            if len(buf) > 4:
-                buf.pop(0)
+            # Callers ingest each event on a frame separately, handing over the
+            # same image every time — store it once.
+            if not buf or buf[-1] != frame_b64:
+                buf.append(frame_b64)
+                if len(buf) > MAX_ACTIVITY_FRAMES:
+                    # Halve the frame rate instead of dropping the oldest frames:
+                    # a long incident still needs its beginning in the summary.
+                    del buf[1::2]
+                    print(
+                        f"[bus] activity {activity_id} exceeded {MAX_ACTIVITY_FRAMES} "
+                        f"frames — thinned to {len(buf)}, still spanning the whole incident"
+                    )
 
         msg: dict = {"type": "event_added", "activity_id": activity_id, "event": event.model_dump()}
         if frame_b64 is not None:

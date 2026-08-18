@@ -4,16 +4,18 @@ import { useCamera } from './hooks/useCamera';
 import { useResolutions } from './hooks/useResolutions';
 import { useRecordings } from './hooks/useRecordings';
 import { TopBar } from './components/TopBar';
+import { DwellTimerBar } from './components/DwellTimerBar';
 import { IncidentFeed } from './components/IncidentFeed';
 import { ReasoningPanel } from './components/ReasoningPanel';
 import { RecordingsModal } from './components/RecordingsModal';
 import { ReportTab } from './components/ReportTab';
 import { EnvironmentSetup } from './components/EnvironmentSetup';
+import { StartScreen } from './components/StartScreen';
 
 const App: React.FC = () => {
   const {
     activities, connected, selectedId, setSelectedId,
-    uploadVideo, uploadProgress, videoUrl, snapshots, clearAll,
+    uploadVideo, uploadProgress, videoUrl, snapshots, dwellTimers, clearAll,
   } = useWebSocket();
 
   const {
@@ -33,6 +35,37 @@ const App: React.FC = () => {
   const { recordings, loading: recordingsLoading, refresh: refreshRecordings, deleteRecording, getVideoUrl, fetchActivities } = useRecordings();
   const [recordingsOpen, setRecordingsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'log' | 'report' | 'env'>('log');
+
+  // The landing screen is shown until the operator picks a starting point. It
+  // is per-session state on purpose — nothing is persisted, so a reload always
+  // offers the choice again.
+  const [showStart, setShowStart] = useState(true);
+
+  // Whether the environment has ever been configured, used only to nudge
+  // first-time users toward Setup. null while unknown.
+  const [configured, setConfigured] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch('http://localhost:8000/environment/config');
+        if (!res.ok) return;
+        const cfg = await res.json() as { environment_type?: string; description?: string };
+        if (cancelled) return;
+        setConfigured(
+          (cfg.environment_type ?? 'generic') !== 'generic' || !!cfg.description?.trim(),
+        );
+      } catch {
+        // Backend down — the start screen already surfaces that separately.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const enterApp = (tab: 'log' | 'env') => {
+    setActiveTab(tab);
+    setShowStart(false);
+  };
 
   // Auto-refresh recordings shortly after camera stops so the new recording is available
   useEffect(() => {
@@ -58,6 +91,17 @@ const App: React.FC = () => {
   // When a matching recording exists, show it in the video panel instead of the upload blob
   const effectiveVideoUrl = matchingRecording ? getVideoUrl(matchingRecording.id) : videoUrl;
   const recordingStartedAt = matchingRecording?.started_at ?? null;
+
+  if (showStart) {
+    return (
+      <StartScreen
+        onQuickStart={() => enterApp('log')}
+        onSetup={() => enterApp('env')}
+        connected={connected}
+        configured={configured}
+      />
+    );
+  }
 
   return (
     <div className="flex flex-col h-screen bg-dash-bg text-gray-100 overflow-hidden">
@@ -93,6 +137,16 @@ const App: React.FC = () => {
         ))}
       </div>
 
+      {/* Live dwell counters — display-only channel, sits above the tab content
+          so it stays visible while a camera runs. */}
+      {activeTab === 'log' && (
+        <DwellTimerBar
+          dwellTimers={dwellTimers}
+          cameraFilter={cameraFilter}
+          cameraLabels={Object.fromEntries(sessions.map((s) => [s.sessionId, s.label]))}
+        />
+      )}
+
       <div className="flex flex-1 overflow-hidden">
         {activeTab === 'log' ? (
           <>
@@ -118,7 +172,7 @@ const App: React.FC = () => {
         ) : activeTab === 'report' ? (
           <ReportTab />
         ) : (
-          <EnvironmentSetup />
+          <EnvironmentSetup cameraSessions={sessions} />
         )}
       </div>
 

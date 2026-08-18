@@ -58,12 +58,13 @@ export const ExplanationView: React.FC<ExplanationViewProps> = ({ explanation, i
         </div>
       </div>
 
-      {/* Evidence columns */}
+      {/* Evidence columns — labelled for operators rather than analysts, but
+          still backed by the evidence_for / evidence_against fields. */}
       <div className="grid grid-cols-2 gap-3">
         {/* Evidence for */}
         <div className="border-l-2 border-green-600/70 pl-3 bg-green-950/10 rounded-r py-2 pr-2">
           <h4 className="font-mono text-[10px] font-semibold tracking-widest text-green-500 uppercase mb-2">
-            Evidence For
+            Main Information
           </h4>
           {explanation.evidence_for.length === 0 ? (
             <p className="text-xs text-gray-600 italic">None identified</p>
@@ -82,7 +83,7 @@ export const ExplanationView: React.FC<ExplanationViewProps> = ({ explanation, i
         {/* Evidence against */}
         <div className="border-l-2 border-red-700/70 pl-3 bg-red-950/10 rounded-r py-2 pr-2">
           <h4 className="font-mono text-[10px] font-semibold tracking-widest text-red-500 uppercase mb-2">
-            Evidence Against
+            Side Notes
           </h4>
           {explanation.evidence_against.length === 0 ? (
             <p className="text-xs text-gray-600 italic">None identified</p>

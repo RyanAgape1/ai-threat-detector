@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { EnvironmentConfig, TimeRule } from '../types';
+import type { CameraSession } from '../hooks/useCamera';
+import { DetectionEventsPanel } from './DetectionEventsPanel';
 
 function isRuleActive(rule: TimeRule): boolean {
   const now = new Date();
@@ -49,7 +51,12 @@ const THRESHOLD_LABELS: Record<string, string> = {
 };
 
 
-export const EnvironmentSetup: React.FC = () => {
+interface EnvironmentSetupProps {
+  /** Live camera sessions, so zone calibration can preview against the real view. */
+  cameraSessions?: CameraSession[];
+}
+
+export const EnvironmentSetup: React.FC<EnvironmentSetupProps> = ({ cameraSessions = [] }) => {
   const [currentConfig, setCurrentConfig] = useState<EnvironmentConfig | null>(null);
   const [selectedEnvType, setSelectedEnvType] = useState('');
   const [customEnvType, setCustomEnvType] = useState('');
@@ -369,6 +376,16 @@ export const EnvironmentSetup: React.FC = () => {
               </div>
             )}
 
+            {/* Detection events — driven by its own pair of agents */}
+            <div className="border-t border-dash-border pt-5">
+              <DetectionEventsPanel
+                envType={selectedEnvType === 'other' ? customEnvType.trim() : selectedEnvType}
+                concerns={concerns}
+                context={context}
+                onConfigChanged={fetchConfig}
+                cameraSessions={cameraSessions}
+              />
+            </div>
           </>
         ) : (
           <p className="text-xs text-gray-500">Loading configuration...</p>

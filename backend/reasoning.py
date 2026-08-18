@@ -9,12 +9,23 @@ from models import DetectionEvent, Explanation
 
 _client: Optional[AsyncOpenAI] = None
 
+# Frames attached to a live, in-progress assessment. Deliberately small — this
+# runs every few seconds for as long as the incident stays open.
+LIVE_FRAME_LIMIT = 3
+
+# Ceiling on frames attached to the closing summary. The activity's whole frame
+# history is sent up to this many; past it the frames are sampled evenly across
+# the incident rather than truncated, so the summary still sees start to finish.
+# ~120 frames is roughly 10k image tokens and a 5 MB request.
+RETRO_FRAME_LIMIT = int(os.environ.get("RETRO_FRAME_LIMIT", "120"))
+
 _BASE_SYSTEM_PROMPT = """You are a security analysis AI that examines detection events from surveillance systems and provides detailed, evidence-based explanations.
 
 You receive structured detection data from multiple sources:
 - CV (computer vision): object detection, pose estimation, tracking
 - AUDIO: sound classification, speech detection
 - BEHAVIOR: movement patterns, proximity analysis
+- CUSTOM: deterministic rules configured for this specific deployment (timers, occupancy counts, zone rules). These are measurements rather than inferences — treat their numbers as reliable, and read their metadata (duration_seconds, count, zone) as fact. A custom event firing is not by itself a threat; judge it against the deployment context.
 
 When video frames are attached, use them as the primary source of truth. Visually verify every detection event against the frames. If a detection label (e.g. "shouting_detected", "elongated_object_detected") is not supported by what you can actually see in the footage, lower the confidence and note the discrepancy. Never overstate a threat that the visual evidence does not support.
 
@@ -37,7 +48,7 @@ Be specific — reference frame numbers, timestamps, event types. Acknowledge un
 
 def _build_system_prompt() -> str:
     ctx = _env.get_environment_context()
-    if ctx and not ctx.startswith("Deployment environment: generic"):
+    if ctx:
         return _BASE_SYSTEM_PROMPT + f"\n\n--- Deployment Context ---\n{ctx}"
     return _BASE_SYSTEM_PROMPT
 
@@ -88,13 +99,34 @@ def fallback_explanation(raw_text: str) -> Explanation:
     )
 
 
+def _sample_evenly(frames: List[str], limit: int) -> List[str]:
+    """Up to `limit` frames spread across the whole list, keeping first and last.
+
+    Used instead of truncation so a long incident is still represented end to
+    end — losing the middle of a five-minute activity is worse than losing
+    temporal resolution across it.
+    """
+    total = len(frames)
+    if total <= limit:
+        return list(frames)
+    if limit <= 1:
+        return [frames[-1]]
+    step = (total - 1) / (limit - 1)
+    indices = sorted({round(i * step) for i in range(limit)})
+    return [frames[i] for i in indices]
+
+
 def _build_user_content(text: str, frames: Optional[List[str]]) -> Any:
-    """Plain string when no frames; vision list when frames are available."""
+    """Plain string when no frames; vision list when frames are available.
+
+    Frames are attached in chronological order and already selected by the
+    caller — this does no further filtering.
+    """
     if not frames:
         return text
     content: List[Any] = []
-    # Send at most 3 most-recent frames; low detail = 85 tokens each
-    for frame_b64 in frames[-3:]:
+    # low detail = 85 tokens per image regardless of resolution
+    for frame_b64 in frames:
         content.append({
             "type": "image_url",
             "image_url": {
@@ -124,10 +156,14 @@ async def explain_live(
             f"Use the previous assessment to judge whether confidence is increasing, decreasing, or stable.\n"
         )
 
+    # Only the most recent frames matter mid-incident; the full history is what
+    # the closing summary gets.
+    selected = (frames or [])[-LIVE_FRAME_LIMIT:]
+
     frame_note = (
-        "\n\nVideo frames from this incident are attached. "
+        "\n\nThe most recent video frames from this incident are attached. "
         "Use them to visually verify the detections — override labels if visuals contradict them."
-        if frames else ""
+        if selected else ""
     )
 
     text_content = (
@@ -138,7 +174,7 @@ async def explain_live(
         "Provide your current best assessment. The incident is still ongoing."
     )
 
-    user_content = _build_user_content(text_content, frames)
+    user_content = _build_user_content(text_content, selected)
 
     response = await client.chat.completions.create(
         model="gpt-4o",
@@ -165,11 +201,31 @@ async def explain_retrospective(
 
     events_text = _events_to_text(events)
 
-    frame_note = (
-        "\n\nVideo frames from this incident are attached. "
-        "Use them to visually verify the detections and inform your final assessment."
-        if frames else ""
-    )
+    # The whole incident, not just its tail — this is the one pass that gets to
+    # look at the footage end to end.
+    captured = frames or []
+    selected = _sample_evenly(captured, RETRO_FRAME_LIMIT)
+
+    frame_note = ""
+    if selected:
+        frame_note = (
+            f"\n\n{len(selected)} video frame(s) from this incident are attached in "
+            "chronological order, covering it from beginning to end."
+        )
+        if len(selected) < len(captured):
+            print(
+                f"[reasoning] retrospective: sampled {len(selected)} of "
+                f"{len(captured)} captured frames (RETRO_FRAME_LIMIT={RETRO_FRAME_LIMIT})"
+            )
+            frame_note += (
+                f" They are an even sample of the {len(captured)} frames captured, so "
+                "the gaps between consecutive frames are elapsed time rather than "
+                "moments when nothing was recorded."
+            )
+        frame_note += (
+            " Read them as a sequence — what changes between frames is evidence. "
+            "Use them to visually verify the detections and inform your final assessment."
+        )
 
     text_content = (
         f"Closed incident — full timeline of {len(events)} detection event(s):\n"
@@ -179,7 +235,7 @@ async def explain_retrospective(
         "Summarize what happened, the overall threat level, and what the operator should take away."
     )
 
-    user_content = _build_user_content(text_content, frames)
+    user_content = _build_user_content(text_content, selected)
 
     response = await client.chat.completions.create(
         model="gpt-4o",
