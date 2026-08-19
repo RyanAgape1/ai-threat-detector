@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 
 interface StartScreenProps {
-  /** Land on the activity log, where cameras are started and incidents appear. */
+  /** Turn the camera on and land on the activity log. */
   onQuickStart: () => void;
   /** Land on the environment page to describe the deployment first. */
   onSetup: () => void;
@@ -18,8 +18,8 @@ const OPTIONS = [
     tagline: 'Start monitoring now',
     accent: 'blue',
     detail:
-      'Go straight to the activity log. Start a camera or upload a video and detections begin immediately using the current settings.',
-    cta: 'Continue →',
+      'Turns your camera on and goes straight to the activity log. Detections begin immediately using the current settings.',
+    cta: 'Start camera →',
   },
   {
     id: 'setup' as const,
@@ -50,7 +50,7 @@ const ACCENT: Record<string, { border: string; text: string; button: string }> =
 
 /**
  * The outline is drawn in pieces so each can start off-screen and converge.
- * `from` is the piece's offset at zero scroll, in viewBox units — large enough
+ * `from` is the piece's offset at the start, in viewBox units — large enough
  * on the x axis to clear the widest viewport before the stage clips it.
  * `delay` staggers the arrivals so the camera assembles rather than snapping.
  */
@@ -83,7 +83,7 @@ const PIECES: Piece[] = [
   { id: 'lens-inner', circle: { cx: 280, cy: 178, r: 15 }, from: [1400, 320], delay: 0.34, width: 3.5 },
 ];
 
-/** Fraction of the scroll each piece spends travelling. */
+/** Fraction of the build each piece spends travelling. */
 const PIECE_SPAN = 0.55;
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
@@ -113,12 +113,28 @@ const TOTAL_MS = BUILD_DURATION_MS + HOLD_MS + SCENE_DURATION_MS;
 
 /* ── Figure walking in ────────────────────────────────────────────────────── */
 
-const FIGURE_START_X = -70;   // off the left edge of the viewBox
+const FIGURE_START_X = -120;  // off the left edge, with room for the scale below
 const FIGURE_END_X = 280;     // directly under the camera
 const FIGURE_FEET_Y = 368;
 
 /** Radius of the light pool. Comfortably larger than the ~93-unit figure. */
 const LIGHT_RADIUS = 86;
+
+/**
+ * The camera and the floor scene are drawn at their own scales rather than
+ * being re-measured piece by piece. Each grows or shrinks about a fixed anchor
+ * so the parts that should stay put do: the camera about its ceiling mount, the
+ * figure about the spot its feet stand on.
+ */
+const CAMERA_SCALE = 1.22;
+const CAMERA_ANCHOR: [number, number] = [280, 44];
+/** Lifts the whole camera clear of the light pool below it. */
+const CAMERA_OFFSET_Y = -26;
+const FIGURE_SCALE = 0.78;
+const FIGURE_ANCHOR: [number, number] = [FIGURE_END_X, FIGURE_FEET_Y];
+
+const scaleAbout = ([ax, ay]: [number, number], k: number) =>
+  `translate(${ax} ${ay}) scale(${k}) translate(${-ax} ${-ay})`;
 
 /**
  * Stick figure, drawn from the feet up so the walk is a single translate.
@@ -193,9 +209,8 @@ const PieceGroup: React.FC<{ piece: Piece; progress: number }> = ({ piece, progr
 };
 
 /**
- * `build` is driven by scroll, `scene` by a timer once the camera is standing —
- * the figure walking in and being lit plays on its own rather than needing more
- * scroll to drag it along.
+ * `build` assembles the camera, `scene` runs the figure walking in and being
+ * lit. Both come off the same clock; see the timeline constants above.
  */
 const CameraScene: React.FC<{ build: number; scene: number }> = ({ build, scene }) => {
   // The walk takes the larger share of a longer scene, so slowing it down does
@@ -222,13 +237,17 @@ const CameraScene: React.FC<{ build: number; scene: number }> = ({ build, scene 
         </radialGradient>
       </defs>
 
-      {PIECES.map((piece) => (
-        <PieceGroup key={piece.id} piece={piece} progress={build} />
-      ))}
+      <g transform={`translate(0 ${CAMERA_OFFSET_Y}) ${scaleAbout(CAMERA_ANCHOR, CAMERA_SCALE)}`}>
+        {PIECES.map((piece) => (
+          <PieceGroup key={piece.id} piece={piece} progress={build} />
+        ))}
+      </g>
 
-      {/* Light first, so the figure stays legible on top of it. */}
-      {lit > 0 && <Searchlight walk={walk} lit={lit} />}
-      {walk > 0 && <StickFigure walk={walk} />}
+      <g transform={scaleAbout(FIGURE_ANCHOR, FIGURE_SCALE)}>
+        {/* Light first, so the figure stays legible on top of it. */}
+        {lit > 0 && <Searchlight walk={walk} lit={lit} />}
+        {walk > 0 && <StickFigure walk={walk} />}
+      </g>
     </svg>
   );
 };
@@ -270,11 +289,23 @@ export const StartScreen: React.FC<StartScreenProps> = ({
   return (
     <div className="h-screen overflow-y-auto overflow-x-hidden bg-dash-bg text-gray-100">
       <div className="min-h-screen flex flex-col items-center justify-center px-6 py-8">
-        <div className="w-full max-w-3xl flex flex-col items-center">
-          <h1 className="font-mono text-sm font-semibold tracking-[0.3em] uppercase text-gray-300 text-center">
+        <div className="w-full max-w-4xl flex flex-col items-center">
+          {/* Same face as the Setup page heading, but sized off the viewport so
+              all 26 characters stay on one line at any width — hence the
+              override of aurora-title's own clamp. */}
+          <h1
+            className="aurora-text aurora-title aurora-compact text-center whitespace-nowrap
+              text-[clamp(1.125rem,3.4vw,3rem)]"
+          >
             Anomaly Explanation Engine
+            <span className="aurora" aria-hidden="true">
+              <span className="aurora__item" />
+              <span className="aurora__item" />
+              <span className="aurora__item" />
+              <span className="aurora__item" />
+            </span>
           </h1>
-          <p className="text-xs text-gray-500 mt-2 text-center">
+          <p className="text-gray-500 mt-3 text-center text-[clamp(0.8125rem,1.5vw,1.0625rem)]">
             Detection events, reasoned over and explained.
           </p>
 

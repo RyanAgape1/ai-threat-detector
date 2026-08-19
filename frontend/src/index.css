@@ -69,3 +69,226 @@ code, pre, .font-mono {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+
+/* ── Aurora heading effect ───────────────────────────────────────────────── */
+/* Coloured blobs drift behind the heading and show through only the letters.
+   The trick is the blend chain: the heading sits on the page background, and
+   the aurora layer over it uses mix-blend-mode: darken. Against the white
+   glyphs the aurora colours are darker, so they win and the text is painted;
+   against the near-black background the background is darker, so it wins and
+   the blobs stay invisible.
+   Adapted from https://prismic.io/blog/css-text-animations */
+/* The effect itself. Carries no typography, so any heading can opt in and keep
+   its own font. */
+.aurora-text {
+  --aurora-bg: #0a0a0f;
+  --aurora-1: #00c2ff;
+  --aurora-2: #33ff8c;
+  --aurora-3: #ffc640;
+  --aurora-4: #e54cff;
+  --aurora-blur: 1rem;
+  --aurora-size: 60vw;
+
+  position: relative;
+  overflow: hidden;
+  margin: 0;
+  /* Must be white: the blend only paints pixels lighter than the aurora. */
+  color: #fff;
+  background: var(--aurora-bg);
+}
+
+/* Display sizing, for a heading that is the whole point of its page. */
+.aurora-title {
+  font-size: clamp(2.5rem, 7vw, 4.5rem);
+  font-weight: 800;
+  letter-spacing: clamp(-1.75px, -0.25vw, -3.5px);
+  line-height: 1.1;
+}
+
+/* For headings only a line tall. Blobs 60vw across would wash a short line in
+   one flat colour; smaller ones let the palette shift along the text. */
+.aurora-compact {
+  --aurora-size: 18rem;
+  --aurora-blur: 0.7rem;
+}
+
+.aurora {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  mix-blend-mode: darken;
+  pointer-events: none;
+}
+
+.aurora__item {
+  position: absolute;
+  width: var(--aurora-size);
+  height: var(--aurora-size);
+  background-color: var(--aurora-1);
+  border-radius: 37% 29% 27% 27% / 28% 25% 41% 37%;
+  filter: blur(var(--aurora-blur));
+  mix-blend-mode: overlay;
+}
+
+.aurora__item:nth-of-type(1) {
+  top: -50%;
+  animation: aurora-border 6s ease-in-out infinite,
+    aurora-1 12s ease-in-out infinite alternate;
+}
+
+.aurora__item:nth-of-type(2) {
+  background-color: var(--aurora-3);
+  right: 0;
+  top: 0;
+  animation: aurora-border 6s ease-in-out infinite,
+    aurora-2 12s ease-in-out infinite alternate;
+}
+
+.aurora__item:nth-of-type(3) {
+  background-color: var(--aurora-2);
+  left: 0;
+  bottom: 0;
+  animation: aurora-border 6s ease-in-out infinite,
+    aurora-3 8s ease-in-out infinite alternate;
+}
+
+.aurora__item:nth-of-type(4) {
+  background-color: var(--aurora-4);
+  right: 0;
+  bottom: -50%;
+  animation: aurora-border 6s ease-in-out infinite,
+    aurora-4 24s ease-in-out infinite alternate;
+}
+
+@keyframes aurora-1 {
+  0%   { top: 0;    right: 0; }
+  50%  { top: 100%; right: 75%; }
+  75%  { top: 100%; right: 25%; }
+  100% { top: 0;    right: 0; }
+}
+
+@keyframes aurora-2 {
+  0%   { top: -50%; left: 0; }
+  60%  { top: 100%; left: 75%; }
+  85%  { top: 100%; left: 25%; }
+  100% { top: -50%; left: 0; }
+}
+
+@keyframes aurora-3 {
+  0%   { bottom: 0;    left: 0; }
+  40%  { bottom: 100%; left: 75%; }
+  65%  { bottom: 40%;  left: 50%; }
+  100% { bottom: 0;    left: 0; }
+}
+
+@keyframes aurora-4 {
+  0%   { bottom: -50%; right: 0; }
+  50%  { bottom: 0;    right: 40%; }
+  90%  { bottom: 50%;  right: 25%; }
+  100% { bottom: -50%; right: 0; }
+}
+
+@keyframes aurora-border {
+  0%   { border-radius: 37% 29% 27% 27%  / 28% 25% 41% 37%; }
+  25%  { border-radius: 47% 29% 39% 49%  / 61% 19% 66% 26%; }
+  50%  { border-radius: 57% 23% 47% 72%  / 63% 17% 66% 33%; }
+  75%  { border-radius: 28% 49% 29% 100% / 93% 20% 64% 25%; }
+  100% { border-radius: 37% 29% 27% 27%  / 28% 25% 41% 37%; }
+}
+
+/* Hold the blobs still rather than looping them, but keep the colour — the
+   heading would be plain white otherwise. */
+@media (prefers-reduced-motion: reduce) {
+  .aurora__item {
+    animation: none;
+  }
+}
+
+/* ── Guided setup highlight ──────────────────────────────────────────────── */
+/* Four gradient lines chase around the edges of whichever region the operator
+   should fill in next. Adapted from the "still in view" button border at
+   https://dev.to/webdeasy/top-20-css-buttons-animations-f41 — moved off the
+   button onto an arbitrary block, and running continuously rather than on
+   hover, since it is pointing something out rather than reacting to a cursor. */
+.guide-region {
+  position: relative;
+  border-radius: 8px;
+}
+
+.guide-region--active {
+  --guide-color: #3b82f6;
+  --guide-fade: rgba(59, 130, 246, 0);
+  background-color: rgba(59, 130, 246, 0.05);
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.22);
+}
+
+/* For the detection-events panel, which is amber rather than blue. */
+.guide-region--amber.guide-region--active {
+  --guide-color: #f59e0b;
+  --guide-fade: rgba(245, 158, 11, 0);
+  background-color: rgba(245, 158, 11, 0.05);
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.22);
+}
+
+.guide-lines {
+  position: absolute;
+  /* Just outside the content, so the lines frame it rather than crossing it. */
+  inset: -6px;
+  overflow: hidden;
+  border-radius: 10px;
+  pointer-events: none;
+}
+
+.guide-lines > span {
+  position: absolute;
+}
+
+.guide-lines > span:nth-child(1) {
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: linear-gradient(to left, var(--guide-fade), var(--guide-color));
+  animation: guide-top 2.4s linear infinite;
+}
+
+.guide-lines > span:nth-child(2) {
+  top: 0;
+  right: 0;
+  width: 2px;
+  height: 100%;
+  background: linear-gradient(to top, var(--guide-fade), var(--guide-color));
+  animation: guide-right 2.4s linear -1.2s infinite;
+}
+
+.guide-lines > span:nth-child(3) {
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: linear-gradient(to right, var(--guide-fade), var(--guide-color));
+  animation: guide-bottom 2.4s linear infinite;
+}
+
+.guide-lines > span:nth-child(4) {
+  top: 0;
+  left: 0;
+  width: 2px;
+  height: 100%;
+  background: linear-gradient(to bottom, var(--guide-fade), var(--guide-color));
+  animation: guide-left 2.4s linear -1.2s infinite;
+}
+
+@keyframes guide-top    { from { transform: translateX(100%); }  to { transform: translateX(-100%); } }
+@keyframes guide-right  { from { transform: translateY(100%); }  to { transform: translateY(-100%); } }
+@keyframes guide-bottom { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+@keyframes guide-left   { from { transform: translateY(-100%); } to { transform: translateY(100%); } }
+
+/* Without the chase the region still needs to be identifiable, so hold the
+   lines still rather than removing them. */
+@media (prefers-reduced-motion: reduce) {
+  .guide-lines > span {
+    animation: none;
+    opacity: 0.55;
+  }
+}

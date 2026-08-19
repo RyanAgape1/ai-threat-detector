@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { EnvironmentConfig, TimeRule } from '../types';
 import type { CameraSession } from '../hooks/useCamera';
 import { DetectionEventsPanel } from './DetectionEventsPanel';
+import { GuideHighlight } from './GuideHighlight';
 
 function isRuleActive(rule: TimeRule): boolean {
   const now = new Date();
@@ -51,12 +52,28 @@ const THRESHOLD_LABELS: Record<string, string> = {
 };
 
 
+const GUIDE_STEPS = ['type', 'hours', 'notes', 'configure', 'events'] as const;
+type GuideStep = (typeof GUIDE_STEPS)[number];
+
+/** What the operator is being asked to do, in their language rather than ours. */
+const GUIDE_LABELS: Record<GuideStep, string> = {
+  type: 'Pick the kind of place these cameras are watching.',
+  hours: 'Add the hours you are open and the days you trade.',
+  notes: 'Say what you actually want watched, in your own words.',
+  configure: 'Press "Configure with AI" to apply all of that.',
+  events: 'Analyse what you wrote, then install the alerts it suggests.',
+};
+
 interface EnvironmentSetupProps {
   /** Live camera sessions, so zone calibration can preview against the real view. */
   cameraSessions?: CameraSession[];
+  /** Arrived here from the setup guide — walk them through the fields in order. */
+  guided?: boolean;
 }
 
-export const EnvironmentSetup: React.FC<EnvironmentSetupProps> = ({ cameraSessions = [] }) => {
+export const EnvironmentSetup: React.FC<EnvironmentSetupProps> = ({
+  cameraSessions = [], guided = false,
+}) => {
   const [currentConfig, setCurrentConfig] = useState<EnvironmentConfig | null>(null);
   const [selectedEnvType, setSelectedEnvType] = useState('');
   const [customEnvType, setCustomEnvType] = useState('');
@@ -68,6 +85,15 @@ export const EnvironmentSetup: React.FC<EnvironmentSetupProps> = ({ cameraSessio
   const [loading, setLoading] = useState(false);
   const [explanation, setExplanation] = useState('');
   const [error, setError] = useState('');
+
+  // Walkthrough progress. A step counts as done when the operator has actually
+  // acted on it — the optional ones can also be waved past with Skip, so nobody
+  // is stuck on a field they do not want to fill.
+  const [typeTouched, setTypeTouched] = useState(false);
+  const [configuredOnce, setConfiguredOnce] = useState(false);
+  const [eventsInstalled, setEventsInstalled] = useState(false);
+  const [skipped, setSkipped] = useState<GuideStep[]>([]);
+  const [guideOn, setGuideOn] = useState(guided);
 
   const fetchConfig = async () => {
     try {
@@ -114,12 +140,27 @@ export const EnvironmentSetup: React.FC<EnvironmentSetupProps> = ({ cameraSessio
       const data: { config: EnvironmentConfig; explanation: string } = await res.json();
       setCurrentConfig(data.config);
       setExplanation(data.explanation);
+      setConfiguredOnce(true);
     } catch (e) {
       setError(String(e));
     } finally {
       setLoading(false);
     }
   };
+
+  // environment_type comes back as 'generic' by default, so a fetched value is
+  // not evidence the operator chose anything.
+  const stepDone: Record<GuideStep, boolean> = {
+    type: typeTouched || (!!currentConfig && currentConfig.environment_type !== 'generic'),
+    hours: !!(businessOpen && businessClose) || businessDays.length > 0,
+    notes: !!(concerns.trim() || context.trim()),
+    configure: configuredOnce,
+    events: eventsInstalled,
+  };
+  const activeStep = guideOn
+    ? GUIDE_STEPS.find((step) => !stepDone[step] && !skipped.includes(step)) ?? null
+    : null;
+  const stepNumber = activeStep ? GUIDE_STEPS.indexOf(activeStep) + 1 : GUIDE_STEPS.length;
 
   return (
     <div className="flex flex-1 overflow-hidden">
@@ -135,14 +176,41 @@ export const EnvironmentSetup: React.FC<EnvironmentSetupProps> = ({ cameraSessio
           </p>
         </div>
 
+        {guideOn && (
+          <div className="rounded border border-blue-500/30 bg-blue-500/5 p-3 flex items-start gap-3">
+            <span className="font-mono text-xs text-blue-300 shrink-0 pt-0.5">
+              {activeStep ? `${stepNumber}/${GUIDE_STEPS.length}` : 'done'}
+            </span>
+            <p className="text-xs text-gray-300 flex-1 leading-relaxed">
+              {activeStep
+                ? GUIDE_LABELS[activeStep]
+                : 'That is everything — the system is set up for this place.'}
+            </p>
+            {activeStep && (
+              <button
+                onClick={() => setSkipped((prev) => [...prev, activeStep])}
+                className="text-xs font-mono text-gray-500 hover:text-gray-300 transition-colors shrink-0"
+              >
+                skip
+              </button>
+            )}
+            <button
+              onClick={() => setGuideOn(false)}
+              className="text-xs font-mono text-gray-600 hover:text-gray-400 transition-colors shrink-0"
+            >
+              {activeStep ? 'exit' : 'dismiss'}
+            </button>
+          </div>
+        )}
+
         {/* Environment type grid */}
-        <div>
+        <GuideHighlight active={activeStep === 'type'} className="p-1 -m-1">
           <p className="text-xs text-gray-400 mb-2">Select environment type</p>
           <div className="grid grid-cols-2 gap-2">
             {ENV_TYPES.map((et) => (
               <button
                 key={et.id}
-                onClick={() => setSelectedEnvType(et.id)}
+                onClick={() => { setSelectedEnvType(et.id); setTypeTouched(true); }}
                 className={`p-3 rounded border text-left transition-colors duration-100 select-none ${
                   selectedEnvType === et.id
                     ? 'border-blue-500 bg-blue-500/10 text-blue-300'
@@ -164,10 +232,10 @@ export const EnvironmentSetup: React.FC<EnvironmentSetupProps> = ({ cameraSessio
               className="mt-2 w-full bg-dash-bg border border-blue-500/50 rounded p-2 text-xs text-gray-200 focus:outline-none focus:border-blue-400 placeholder-gray-600"
             />
           )}
-        </div>
+        </GuideHighlight>
 
         {/* Business hours */}
-        <div>
+        <GuideHighlight active={activeStep === 'hours'} className="p-1 -m-1">
           <label className="text-xs text-gray-400 block mb-1">
             Business hours <span className="text-gray-600">(optional — if set, the agent will use these exact hours for time rules)</span>
           </label>
@@ -217,9 +285,10 @@ export const EnvironmentSetup: React.FC<EnvironmentSetupProps> = ({ cameraSessio
               Weekdays
             </button>
           </div>
-        </div>
+        </GuideHighlight>
 
-        {/* Concerns */}
+        {/* Concerns and context — one step, since the agents read them together */}
+        <GuideHighlight active={activeStep === 'notes'} className="flex flex-col gap-5 p-1 -m-1">
         <div>
           <label className="text-xs text-gray-400 block mb-1">
             Primary security concerns <span className="text-gray-600">(optional)</span>
@@ -244,16 +313,19 @@ export const EnvironmentSetup: React.FC<EnvironmentSetupProps> = ({ cameraSessio
             className="w-full bg-dash-bg border border-dash-border rounded p-2 text-xs text-gray-200 h-16 resize-none focus:outline-none focus:border-blue-500 placeholder-gray-600"
           />
         </div>
+        </GuideHighlight>
 
         {error && <p className="text-xs text-red-400">{error}</p>}
 
-        <button
-          onClick={() => void handleConfigure()}
-          disabled={loading || !selectedEnvType}
-          className="px-4 py-2 bg-blue-600 text-white text-xs font-semibold rounded hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors self-start"
-        >
-          {loading ? 'Configuring...' : 'Configure with AI'}
-        </button>
+        <GuideHighlight active={activeStep === 'configure'} className="self-start p-1 -m-1">
+          <button
+            onClick={() => void handleConfigure()}
+            disabled={loading || !selectedEnvType}
+            className="px-4 py-2 bg-blue-600 text-white text-xs font-semibold rounded hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            {loading ? 'Configuring...' : 'Configure with AI'}
+          </button>
+        </GuideHighlight>
 
         {explanation && (
           <div className="bg-dash-panel border border-dash-border rounded p-3 mt-1">
@@ -384,6 +456,8 @@ export const EnvironmentSetup: React.FC<EnvironmentSetupProps> = ({ cameraSessio
                 context={context}
                 onConfigChanged={fetchConfig}
                 cameraSessions={cameraSessions}
+                guideActive={activeStep === 'events'}
+                onDesignApplied={() => setEventsInstalled(true)}
               />
             </div>
           </>

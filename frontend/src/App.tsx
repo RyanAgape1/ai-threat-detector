@@ -11,6 +11,7 @@ import { RecordingsModal } from './components/RecordingsModal';
 import { ReportTab } from './components/ReportTab';
 import { EnvironmentSetup } from './components/EnvironmentSetup';
 import { StartScreen } from './components/StartScreen';
+import { SetupGuide } from './components/SetupGuide';
 
 const App: React.FC = () => {
   const {
@@ -36,10 +37,14 @@ const App: React.FC = () => {
   const [recordingsOpen, setRecordingsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'log' | 'report' | 'env'>('log');
 
-  // The landing screen is shown until the operator picks a starting point. It
-  // is per-session state on purpose — nothing is persisted, so a reload always
-  // offers the choice again.
-  const [showStart, setShowStart] = useState(true);
+  // Which pre-dashboard screen is showing. Per-session state on purpose —
+  // nothing is persisted, so a reload always offers the choice again.
+  // 'start' -> landing, 'guide' -> what setup does, 'app' -> the dashboard.
+  const [screen, setScreen] = useState<'start' | 'guide' | 'app'>('start');
+
+  // Set only when the environment page is reached through the setup guide, so
+  // the walkthrough runs for someone being onboarded and nobody else.
+  const [guided, setGuided] = useState(false);
 
   // Whether the environment has ever been configured, used only to nudge
   // first-time users toward Setup. null while unknown.
@@ -64,7 +69,15 @@ const App: React.FC = () => {
 
   const enterApp = (tab: 'log' | 'env') => {
     setActiveTab(tab);
-    setShowStart(false);
+    setScreen('app');
+  };
+
+  // Quick Start means exactly that: land on the log and bring the camera up
+  // without a second click. The tab switch goes first so the video element the
+  // capture loop writes into is mounted by the time permission is granted.
+  const quickStart = () => {
+    enterApp('log');
+    if (!cameraActive) void startCamera('');
   };
 
   // Auto-refresh recordings shortly after camera stops so the new recording is available
@@ -92,13 +105,24 @@ const App: React.FC = () => {
   const effectiveVideoUrl = matchingRecording ? getVideoUrl(matchingRecording.id) : videoUrl;
   const recordingStartedAt = matchingRecording?.started_at ?? null;
 
-  if (showStart) {
+  if (screen === 'start') {
     return (
       <StartScreen
-        onQuickStart={() => enterApp('log')}
-        onSetup={() => enterApp('env')}
+        onQuickStart={quickStart}
+        // Setup goes via the guide first — the environment page is a wall of
+        // fields otherwise, with no hint of what any of them change.
+        onSetup={() => setScreen('guide')}
         connected={connected}
         configured={configured}
+      />
+    );
+  }
+
+  if (screen === 'guide') {
+    return (
+      <SetupGuide
+        onContinue={() => { setGuided(true); enterApp('env'); }}
+        onBack={() => setScreen('start')}
       />
     );
   }
@@ -172,7 +196,7 @@ const App: React.FC = () => {
         ) : activeTab === 'report' ? (
           <ReportTab />
         ) : (
-          <EnvironmentSetup cameraSessions={sessions} />
+          <EnvironmentSetup cameraSessions={sessions} guided={guided} />
         )}
       </div>
 

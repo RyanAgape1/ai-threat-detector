@@ -7,6 +7,7 @@ import type {
   Zone,
 } from '../types';
 import type { CameraSession } from '../hooks/useCamera';
+import { GuideHighlight } from './GuideHighlight';
 
 const API = 'http://localhost:8000';
 
@@ -68,10 +69,15 @@ interface Props {
   onConfigChanged?: () => void | Promise<void>;
   /** Live camera sessions — zone calibration draws over the real camera view. */
   cameraSessions?: CameraSession[];
+  /** Walkthrough is pointing at these two buttons. */
+  guideActive?: boolean;
+  /** The designer finished and wrote rules — the last walkthrough step is done. */
+  onDesignApplied?: () => void;
 }
 
 export const DetectionEventsPanel: React.FC<Props> = ({
   envType, concerns, context, onConfigChanged, cameraSessions = [],
+  guideActive = false, onDesignApplied,
 }) => {
   const [state, setState] = useState<DetectionEventsState | null>(null);
   const [analysis, setAnalysis] = useState<ContextAnalysis | null>(null);
@@ -132,6 +138,7 @@ export const DetectionEventsPanel: React.FC<Props> = ({
       // The designer can also change which built-ins are suppressed, which the
       // config panels above render — keep them in sync.
       await onConfigChanged?.();
+      onDesignApplied?.();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -196,7 +203,7 @@ export const DetectionEventsPanel: React.FC<Props> = ({
       </p>
 
       {/* ── Stage 1 / 2 controls ── */}
-      <div className="flex items-center gap-2 flex-wrap">
+      <GuideHighlight active={guideActive} tone="amber" className="flex items-center gap-2 flex-wrap p-1 -m-1">
         <button
           onClick={() => void handleAnalyze()}
           disabled={analyzing || applying || !hasContext}
@@ -213,7 +220,7 @@ export const DetectionEventsPanel: React.FC<Props> = ({
         >
           {applying ? 'Designing...' : analysis ? '2 · Build these events' : '2 · Design & install'}
         </button>
-      </div>
+      </GuideHighlight>
 
       {!hasContext && (
         <p className="text-xs text-gray-600 italic">
