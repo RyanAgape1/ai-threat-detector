@@ -703,7 +703,7 @@ class CustomEventEngine:
                 }
                 print(
                     f'[dwell] {event_type}: timer started ({mode} mode) '
-                    f'— fires at {_fmt_duration(min_seconds)}'
+                    f'- fires at {_fmt_duration(min_seconds)}'
                 )
                 continue
 
@@ -732,7 +732,7 @@ class CustomEventEngine:
                         print(
                             f'[dwell] {event_type}: person left their spot for '
                             f'{_fmt_duration(float(p.get("drift_grace_seconds", 10.0)))} '
-                            f'— clock reset (lost {_fmt_duration(held)})'
+                            f'- clock reset (lost {_fmt_duration(held)})'
                         )
                         continue
                 else:

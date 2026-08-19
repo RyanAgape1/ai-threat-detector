@@ -211,7 +211,7 @@ async def analyze_context(env_type: str, concerns: str, context: str) -> dict:
         print(f"[analyst] attempt {attempt + 1}: no usable tool call, retrying")
 
     if not analysis:
-        print("[analyst] giving up after retries — reporting no changes")
+        print("[analyst] giving up after retries - reporting no changes")
 
     # Normalise so the frontend and designer agent can rely on the shape
     return {

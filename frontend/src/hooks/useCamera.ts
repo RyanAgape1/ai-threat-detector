@@ -20,6 +20,8 @@ interface SessionInternals {
   mediaRecorder: MediaRecorder | null;
   audioContext: AudioContext | null;
   analyser: AnalyserNode | null;
+  rmsInterval: ReturnType<typeof setInterval> | null;
+  chunkTimer: ReturnType<typeof setTimeout> | null;
 }
 
 export interface UseCameraReturn {
@@ -63,7 +65,12 @@ export function useCamera(): UseCameraReturn {
     if (!internals) return;
 
     if (internals.frameInterval !== null) clearInterval(internals.frameInterval);
-    if (internals.mediaRecorder?.state !== 'inactive') internals.mediaRecorder?.stop();
+    if (internals.rmsInterval !== null) clearInterval(internals.rmsInterval);
+    if (internals.chunkTimer !== null) clearTimeout(internals.chunkTimer);
+    if (internals.mediaRecorder && internals.mediaRecorder.state !== 'inactive') {
+      internals.mediaRecorder.onstop = null; // otherwise stopping starts another chunk
+      internals.mediaRecorder.stop();
+    }
     internals.audioContext?.close().catch(() => {});
     internals.stream.getTracks().forEach((t) => t.stop());
 
@@ -90,7 +97,11 @@ export function useCamera(): UseCameraReturn {
           video: deviceId ? { deviceId: { exact: deviceId } } : true,
           audio: true,
         });
-      } catch {
+      } catch (avErr) {
+        console.warn(
+          '[audio] microphone request was refused — retrying video-only, so there '
+          + 'will be no audio events for this session:', avErr,
+        );
         try {
           stream = await navigator.mediaDevices.getUserMedia({
             video: deviceId ? { deviceId: { exact: deviceId } } : true,
@@ -150,13 +161,25 @@ export function useCamera(): UseCameraReturn {
         mediaRecorder: null,
         audioContext: null,
         analyser: null,
+        rmsInterval: null,
+        chunkTimer: null,
       };
 
       // Audio capture
       try {
         const audioTracks = stream.getAudioTracks();
-        if (audioTracks.length > 0) {
+        if (audioTracks.length === 0) {
+          console.warn('[audio] this stream has no microphone track — audio events are off');
+        } else {
+          console.log(`[audio] capturing from "${audioTracks[0].label || 'default mic'}"`);
           const audioCtx = new AudioContext();
+          // Created after an await on getUserMedia, so the user-gesture chain may
+          // already be broken and the context starts suspended — which would feed
+          // the analyser nothing but zeros.
+          if (audioCtx.state === 'suspended') {
+            await audioCtx.resume().catch(() => {});
+            console.log(`[audio] context was suspended, now "${audioCtx.state}"`);
+          }
           internals.audioContext = audioCtx;
           const source = audioCtx.createMediaStreamSource(stream);
           const analyser = audioCtx.createAnalyser();
@@ -167,29 +190,76 @@ export function useCamera(): UseCameraReturn {
           const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
             ? 'audio/webm;codecs=opus'
             : 'audio/webm';
-          const mr = new MediaRecorder(stream, { mimeType });
+          const mr = new MediaRecorder(new MediaStream(audioTracks), { mimeType });
           internals.mediaRecorder = mr;
+          mr.onerror = (ev) => console.error('[audio] MediaRecorder error:', ev);
+
+          // The analyser only ever holds the most recent ~43ms. Reading it once
+          // per chunk would judge two seconds of audio by whichever 43ms landed
+          // on the boundary — usually a gap between words, which the backend
+          // then discards as silence. Poll continuously and accumulate instead.
+          const timeBuf = new Float32Array(analyser.fftSize);
+          let sumSquares = 0;
+          let sampleCount = 0;
+          let peakRms = 0;
+          internals.rmsInterval = setInterval(() => {
+            analyser.getFloatTimeDomainData(timeBuf);
+            let windowSum = 0;
+            for (let i = 0; i < timeBuf.length; i++) windowSum += timeBuf[i] * timeBuf[i];
+            sumSquares += windowSum;
+            sampleCount += timeBuf.length;
+            // Kept alongside the mean: a short shout in an otherwise quiet chunk
+            // averages away, but it is exactly what the loud gate is looking for.
+            peakRms = Math.max(peakRms, Math.sqrt(windowSum / timeBuf.length));
+          }, 50);
 
           mr.ondataavailable = async (e) => {
-            if (e.data.size < 500) return;
-            const timeBuf = new Float32Array(analyser.fftSize);
-            analyser.getFloatTimeDomainData(timeBuf);
-            const rms = Math.sqrt(timeBuf.reduce((s, x) => s + x * x, 0) / timeBuf.length);
+            if (e.data.size < 500) {
+              console.warn(`[audio] chunk was only ${e.data.size}B — dropped, nothing recorded`);
+              return;
+            }
+            const rms = sampleCount > 0 ? Math.sqrt(sumSquares / sampleCount) : 0;
+            const peak = peakRms;
+            sumSquares = 0;
+            sampleCount = 0;
+            peakRms = 0;
             const fd = new FormData();
             fd.append('audio', e.data, 'audio.webm');
             fd.append('rms', String(rms));
+            fd.append('rms_peak', String(peak));
             fd.append('session_id', sessionId);
             try {
-              await fetch('http://localhost:8000/stream/audio', { method: 'POST', body: fd });
-            } catch {
-              // Backend unreachable — skip
+              const res = await fetch('http://localhost:8000/stream/audio', {
+                method: 'POST', body: fd,
+              });
+              console.log(
+                `[audio] sent ${e.data.size}B rms=${rms.toFixed(4)} `
+                + `peak=${peak.toFixed(4)} -> HTTP ${res.status}`,
+              );
+            } catch (postErr) {
+              console.warn('[audio] could not reach the backend:', postErr);
             }
           };
 
-          mr.start(2000);
+          // Record in discrete start/stop cycles rather than with a timeslice.
+          // In timeslice mode only the first blob carries the WebM header — every
+          // later one is a bare cluster continuation, so Whisper accepts the first
+          // chunk of a session and rejects all the rest as an invalid file format.
+          // A full stop/start per chunk makes each blob a standalone file.
+          const CHUNK_MS = 2000;
+          const beginChunk = () => {
+            if (mr.state !== 'inactive') return;
+            mr.start();
+            internals.chunkTimer = setTimeout(() => {
+              if (mr.state === 'recording') mr.stop();
+            }, CHUNK_MS);
+          };
+          mr.onstop = () => beginChunk();
+          beginChunk();
+          console.log(`[audio] recorder started (${mimeType}), ${CHUNK_MS}ms chunks`);
         }
       } catch (audioErr) {
-        console.warn('Audio capture setup failed, continuing video-only:', audioErr);
+        console.warn('[audio] capture setup failed, continuing video-only:', audioErr);
       }
 
       // Register internals and add session to state (triggers render → video element created)
@@ -243,7 +313,12 @@ export function useCamera(): UseCameraReturn {
     return () => {
       internalsRef.current.forEach((internals, sessionId) => {
         if (internals.frameInterval !== null) clearInterval(internals.frameInterval);
-        if (internals.mediaRecorder?.state !== 'inactive') internals.mediaRecorder?.stop();
+        if (internals.rmsInterval !== null) clearInterval(internals.rmsInterval);
+        if (internals.chunkTimer !== null) clearTimeout(internals.chunkTimer);
+        if (internals.mediaRecorder && internals.mediaRecorder.state !== 'inactive') {
+          internals.mediaRecorder.onstop = null;
+          internals.mediaRecorder.stop();
+        }
         internals.audioContext?.close().catch(() => {});
         internals.stream.getTracks().forEach((t) => t.stop());
         const fd = new FormData();

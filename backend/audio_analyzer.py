@@ -62,7 +62,9 @@ async def _transcribe(audio_bytes: bytes, filename: str) -> Optional[str]:
         )
         text = (result or "").strip()
         return text if text else None
-    except Exception:
+    except Exception as exc:
+        # Swallowing this silently made a dead API key look like a quiet room.
+        print(f"[audio] transcription failed: {type(exc).__name__}: {exc}")
         return None
 
 
@@ -70,8 +72,20 @@ def _events_from_rms_and_transcript(
     rms: float,
     transcript: Optional[str],
     extra_meta: Optional[dict] = None,
+    peak: Optional[float] = None,
 ) -> List[DetectionEvent]:
+    """Build events from a chunk's loudness and what was said in it.
+
+    `rms` is the mean across the whole chunk and decides sustained loudness.
+    `peak` is the loudest moment within it, which is what the shout gate wants —
+    a two-second mean washes out a one-second shout. Defaults to `rms` for
+    callers that only measure the mean.
+    """
+    peak = rms if peak is None else max(peak, rms)
+
     meta: dict = {"rms": round(rms, 4)}
+    if peak > rms:
+        meta["rms_peak"] = round(peak, 4)
     if transcript:
         meta["transcript"] = transcript[:200]
     if extra_meta:
@@ -80,7 +94,7 @@ def _events_from_rms_and_transcript(
     text_lower = (transcript or "").lower()
     has_shout_word = any(kw in text_lower for kw in SHOUT_KEYWORDS)
 
-    if rms >= LOUD_RMS and has_shout_word:
+    if peak >= LOUD_RMS and has_shout_word:
         return [DetectionEvent(
             source="audio", type="shouting_detected",
             confidence=min(0.93, 0.55 + rms * 2),
@@ -103,18 +117,27 @@ async def analyze_audio_chunk(
     audio_bytes: bytes,
     filename: str,
     rms_hint: float,
+    peak_hint: float = 0.0,
 ) -> List[DetectionEvent]:
     """
     Analyze a browser-recorded audio chunk.
-    rms_hint is the pre-computed RMS from the browser's Web Audio API.
-    We rely on rms_hint for volume (WebM can't be decoded by the wave module)
-    and Whisper for content.
+    rms_hint is the browser's mean RMS across the chunk, peak_hint its loudest
+    moment. We rely on those for volume (WebM can't be decoded by the wave
+    module) and on Whisper for content.
     """
-    if rms_hint < SILENCE_RMS:
+    loudest = max(rms_hint, peak_hint)
+    if loudest < SILENCE_RMS:
+        print(f"[audio] rms={rms_hint:.4f} peak={peak_hint:.4f} - below silence gate, skipped")
         return []
 
     transcript = await _transcribe(audio_bytes, filename)
-    return _events_from_rms_and_transcript(rms_hint, transcript)
+    events = _events_from_rms_and_transcript(rms_hint, transcript, peak=peak_hint)
+    print(
+        f"[audio] rms={rms_hint:.4f} peak={peak_hint:.4f} "
+        f"transcript={transcript!r} -> {[e.type for e in events] or 'no events'} "
+        f"(gates: elevated>={ELEVATED_RMS} loud>={LOUD_RMS})"
+    )
+    return events
 
 
 # ── Uploaded-video audio ─────────────────────────────────────────────────────

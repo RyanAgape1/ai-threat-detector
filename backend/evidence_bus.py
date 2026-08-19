@@ -83,7 +83,7 @@ class EvidenceBus:
                     del buf[1::2]
                     print(
                         f"[bus] activity {activity_id} exceeded {MAX_ACTIVITY_FRAMES} "
-                        f"frames — thinned to {len(buf)}, still spanning the whole incident"
+                        f"frames - thinned to {len(buf)}, still spanning the whole incident"
                     )
 
         msg: dict = {"type": "event_added", "activity_id": activity_id, "event": event.model_dump()}

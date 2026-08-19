@@ -109,7 +109,7 @@ async def lifespan(app: FastAPI):
     if s3_backup.is_configured():
         print("[s3] S3 backup enabled - DB snapshots every hour, recordings uploaded on save")
     else:
-        print("[s3] S3 not configured — set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_S3_BUCKET to enable")
+        print("[s3] S3 not configured - set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_S3_BUCKET to enable")
 
     print("Backend running on http://localhost:8000")
     yield
@@ -328,12 +328,13 @@ async def stream_frame(
 async def stream_audio(
     audio: UploadFile = File(...),
     rms: float = Form(0.0),
+    rms_peak: float = Form(0.0),
     session_id: str = Form(""),
 ) -> dict:
     """Accept a 2-second audio chunk from a camera session, run Whisper, inject events."""
     contents = await audio.read()
     events = await audio_analyzer.analyze_audio_chunk(
-        contents, audio.filename or "audio.webm", rms
+        contents, audio.filename or "audio.webm", rms, rms_peak
     )
     for event in events:
         if session_id:
