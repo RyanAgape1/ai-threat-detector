@@ -89,7 +89,6 @@ export const EnvironmentSetup: React.FC<EnvironmentSetupProps> = ({
   // Walkthrough progress. A step counts as done when the operator has actually
   // acted on it — the optional ones can also be waved past with Skip, so nobody
   // is stuck on a field they do not want to fill.
-  const [typeTouched, setTypeTouched] = useState(false);
   const [configuredOnce, setConfiguredOnce] = useState(false);
   const [eventsInstalled, setEventsInstalled] = useState(false);
   const [skipped, setSkipped] = useState<GuideStep[]>([]);
@@ -101,7 +100,9 @@ export const EnvironmentSetup: React.FC<EnvironmentSetupProps> = ({
       if (res.ok) {
         const cfg: EnvironmentConfig = await res.json();
         setCurrentConfig(cfg);
-        setSelectedEnvType(cfg.environment_type);
+        // Deliberately not adopted into selectedEnvType: the picker starts empty
+        // so the operator makes the choice themselves. What is currently saved is
+        // shown next to the picker and in the panel on the right.
       }
     } catch {
       // backend may not be running yet
@@ -148,10 +149,8 @@ export const EnvironmentSetup: React.FC<EnvironmentSetupProps> = ({
     }
   };
 
-  // environment_type comes back as 'generic' by default, so a fetched value is
-  // not evidence the operator chose anything.
   const stepDone: Record<GuideStep, boolean> = {
-    type: typeTouched || (!!currentConfig && currentConfig.environment_type !== 'generic'),
+    type: !!selectedEnvType && (selectedEnvType !== 'other' || !!customEnvType.trim()),
     hours: !!(businessOpen && businessClose) || businessDays.length > 0,
     notes: !!(concerns.trim() || context.trim()),
     configure: configuredOnce,
@@ -205,12 +204,19 @@ export const EnvironmentSetup: React.FC<EnvironmentSetupProps> = ({
 
         {/* Environment type grid */}
         <GuideHighlight active={activeStep === 'type'} className="p-1 -m-1">
-          <p className="text-xs text-gray-400 mb-2">Select environment type</p>
+          <p className="text-xs text-gray-400 mb-2">
+            Select environment type
+            {currentConfig?.environment_type && (
+              <span className="text-gray-600">
+                {' '}(currently saved: <span className="font-mono">{currentConfig.environment_type}</span>)
+              </span>
+            )}
+          </p>
           <div className="grid grid-cols-2 gap-2">
             {ENV_TYPES.map((et) => (
               <button
                 key={et.id}
-                onClick={() => { setSelectedEnvType(et.id); setTypeTouched(true); }}
+                onClick={() => setSelectedEnvType(et.id)}
                 className={`p-3 rounded border text-left transition-colors duration-100 select-none ${
                   selectedEnvType === et.id
                     ? 'border-blue-500 bg-blue-500/10 text-blue-300'
